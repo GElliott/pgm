@@ -1,0 +1,16 @@
+# object files
+*.o
+*.a
+*.so
+
+# junk files
+._*
+.DS_Store
+*.swp
+
+# generated files
+*.d
+*.d.*
+
+# executables
+basictest

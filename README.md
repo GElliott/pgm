@@ -3,6 +3,8 @@ pgm
 
 A soft real-time implementation of the Processing Graph Method (PGM) on top of Litmus^RT
 
+Released as open source under the germs of the GNU General Public License (GPL2).
+
 Overview
 ========
 

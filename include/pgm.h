@@ -57,6 +57,8 @@ int pgm_degree(node_t node);
 int pgm_degree_in(node_t node);
 int pgm_degree_out(node_t node);
 
+int pgm_is_dag(graph_t graph);
+
 // convienience functions to allow number-based names instead of string-based names.
 
 static int pgm_init_graph(graph_t* graph, unsigned int numerical_name)

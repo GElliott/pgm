@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
+#include <set>
 #include <string>
 #include <sstream>
 
@@ -750,6 +751,69 @@ int pgm_degree_out(node_t node)
 
 out:
 	return ret;
+}
+
+static int dag_visit(
+	const struct pgm_graph* const g,
+	const struct pgm_node* const n,
+	std::set<std::string>& visited,
+	std::set<std::string>& path)
+{
+	const std::string name(n->name);
+
+	// recursive DFS to detect cycles
+	if(visited.find(name) == visited.end())
+	{
+		visited.insert(name);
+		path.insert(name);
+
+		for(int i = 0; i < n->nr_out; ++i)
+		{
+			const struct pgm_node* const successor = &(g->nodes[g->edges[n->out[i]].consumer]);
+			const std::string successor_name(successor->name);
+
+			// already appears on this path?
+			if(path.find(successor_name) != path.end())
+				return 0;
+
+			// visit successor
+			if(!dag_visit(g, successor, visited, path))
+				return 0;
+		}
+
+		path.erase(path.find(name));
+	}
+
+	return 1;
+}
+
+int pgm_is_dag(graph_t graph)
+{
+	int isDag = 1; // assume true
+	if(!is_valid_graph(graph))
+	{
+		isDag = 0;
+	}
+	else
+	{
+		const struct pgm_graph* const g = &graphs[graph];
+		std::set<std::string> visited;
+
+		// there might be multiple roots or even unconnected nodes,
+		// so iterate over the set until all have been visited or
+		// graph proven not to be a dag.
+		for(int i = 0; i < g->nr_nodes && 1 == isDag; ++i)
+		{
+			const pgm_node* const n = &(g->nodes[i]);
+			if(visited.find(std::string(n->name)) == visited.end())
+			{
+				std::set<std::string> path;
+				isDag = dag_visit(g, n, visited, path);
+			}
+		}
+	}
+
+	return isDag;
 }
 
 int pgm_claim_node(node_t node, pid_t tid)

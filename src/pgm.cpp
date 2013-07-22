@@ -701,6 +701,57 @@ out:
 	return ret;
 }
 
+int pgm_degree(node_t node)
+{
+	int ret = -1;
+	struct pgm_graph* g;
+	struct pgm_node* n;
+
+	if(!is_valid_graph(node.graph))
+		goto out;
+
+	g = &graphs[node.graph];
+	n = &g->nodes[node.node];
+	ret = n->nr_in + n->nr_out;
+
+out:
+	return ret;
+}
+
+int pgm_degree_in(node_t node)
+{
+	int ret = -1;
+	struct pgm_graph* g;
+	struct pgm_node* n;
+
+	if(!is_valid_graph(node.graph))
+		goto out;
+
+	g = &graphs[node.graph];
+	n = &g->nodes[node.node];
+	ret = n->nr_in;
+
+out:
+	return ret;
+}
+
+int pgm_degree_out(node_t node)
+{
+	int ret = -1;
+	struct pgm_graph* g;
+	struct pgm_node* n;
+
+	if(!is_valid_graph(node.graph))
+		goto out;
+
+	g = &graphs[node.graph];
+	n = &g->nodes[node.node];
+	ret = n->nr_out;
+
+out:
+	return ret;
+}
+
 int pgm_claim_node(node_t node, pid_t tid)
 {
 	int ret = -1;

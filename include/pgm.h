@@ -53,6 +53,9 @@ int pgm_wait(node_t node);
 int pgm_complete(node_t node);
 int pgm_terminate(node_t node);
 
+int pgm_degree(node_t node);
+int pgm_degree_in(node_t node);
+int pgm_degree_out(node_t node);
 
 // convienience functions to allow number-based names instead of string-based names.
 

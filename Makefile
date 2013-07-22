@@ -22,7 +22,8 @@ LIBPGM = .
 
 # compiler flags
 flags-std      = -std=gnu++11
-flags-optim    = -O2
+#flags-optim    = -O2
+flags-optim    = 
 flags-debug    = -g -Wall -Werror -Wno-unused-function
 flags-api      = -D_XOPEN_SOURCE=600 -D_GNU_SOURCE -pthread
 
@@ -71,7 +72,7 @@ AR  := ${CROSS_COMPILE}${AR}
 # Targets
 
 all     = lib ${tools}
-tools   = basictest
+tools   = basictest pgmrt
 
 .PHONY: all lib clean dump-config TAGS tags cscope help
 
@@ -119,7 +120,9 @@ vpath %.cpp tools
 
 obj-basictest = basictest.o
 lib-basictest = -lpthread -lm -lrt -lboost_filesystem-mt -lboost_system-mt
-#lib-basictest = -lpthread -lm -lrt -lboost_filesystem-mt -lboost_system-mt ${liblitmus-flags}
+
+obj-pgmrt = pgmrt.o
+lib-pgmrt = -lpthread -lm -lrt -lboost_filesystem-mt -lboost_system-mt -lboost_program_options-mt ${liblitmus-flags}
 
 
 # ##############################################################################

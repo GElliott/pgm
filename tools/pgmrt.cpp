@@ -13,7 +13,7 @@
 #include "pgm.h"
 #include "litmus.h"
 
-//#define NO_LITMUS
+#define NO_LITMUS
 
 using namespace boost;
 
@@ -167,7 +167,10 @@ void parse_graph_description(
 		edges.push_back(e);
 	}
 
-	// TODO: Check for cycles. PGM is supposed to be a DAG.
+	if(!pgm_is_dag(g))
+	{
+		throw std::runtime_error(std::string("graph is not acyclic"));
+	}
 }
 
 void parse_graph_file(

@@ -1086,6 +1086,8 @@ out:
 }
 
 typedef uint8_t token_t;
+
+__attribute__((aligned(16)))
 static const token_t TOKEN_BUF[] = {
 TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN,
 TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN,
@@ -1199,7 +1201,7 @@ static eWaitStatus pgm_wait_for_edges(pgm_fd_mask_t* to_wait, struct pgm_graph* 
 	return WaitSuccess;
 }
 
-static bool has_terminate_token(token_t* buf, int nr_tokens)
+inline static bool has_terminate_token(token_t buf[MAX_CONSUME], int nr_tokens)
 {
 	return (0 != memcmp(buf, TOKEN_BUF, nr_tokens*sizeof(token_t)));
 }
@@ -1207,8 +1209,7 @@ static bool has_terminate_token(token_t* buf, int nr_tokens)
 static int pgm_recv(struct pgm_graph* g, struct pgm_node* n)
 {
 	int ret = -1;
-	ssize_t bytes;
-	token_t v[MAX_CONSUME];
+	__attribute__((aligned(16))) token_t v[MAX_CONSUME];
 	
 	// brainfart. easier way?
 	pgm_fd_mask_t to_wait = ~((pgm_fd_mask_t)0) >> (sizeof(to_wait)*8 - n->nr_in);
@@ -1236,6 +1237,7 @@ retry:
 		bool did_read_more = false;
 		struct pgm_edge* e = &g->edges[n->in[i]];
 		ssize_t bytesToRead = e->nr_consume * sizeof(token_t);
+		ssize_t bytes;
 	read_more:
 		bytes = read(e->fd_in, &v, bytesToRead);
 		if(bytes == bytesToRead)
@@ -1266,7 +1268,8 @@ retry:
 			}
 			else
 			{
-				fprintf(stderr, "PGM warning: failed to read expected number of tokens: tokens lost/leaked! "
+				fprintf(stderr, "PGM warning: failed to read expected number of "
+						"tokens: tokens lost/leaked! "
 						"edge %s/%s of node %s/%s. Error %d: %s\n",
 						g->name, e->name, g->name, n->name, errno, strerror(errno));
 			}

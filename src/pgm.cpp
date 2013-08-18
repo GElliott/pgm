@@ -607,7 +607,12 @@ int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer, const char* na
 	len = strnlen(name, PGM_EDGE_NAME_LEN);
 	if(len <= 0 || len > PGM_EDGE_NAME_LEN)
 		goto out;
-	
+	if(threshold != 1)
+	{
+		fprintf(stderr, "Non-unit thresholds not yet supported.\n");
+		goto out;
+	}
+
 	g = &graphs[producer.graph];
 	pthread_mutex_lock(&g->lock);
 	
@@ -1080,7 +1085,23 @@ out:
 	return ret;
 }
 
-static int pgm_send(struct pgm_graph* g, struct pgm_node* n, uint8_t msg)
+typedef uint8_t token_t;
+static const token_t TOKEN_BUF[] = {
+TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN,
+TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN,
+TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN,
+TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN,
+TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN,
+TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN,
+TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN,
+TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN,
+TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN,
+TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN, TOKEN
+};
+static const size_t MAX_PRODUCE = sizeof(TOKEN_BUF)/sizeof(TOKEN_BUF[0]);
+static const size_t MAX_CONSUME = MAX_PRODUCE;
+
+static int pgm_send(struct pgm_graph* g, struct pgm_node* n, token_t msg)
 {
 	int ret = 0;
 	
@@ -1089,7 +1110,17 @@ static int pgm_send(struct pgm_graph* g, struct pgm_node* n, uint8_t msg)
 	for(int i = 0; i < n->nr_out; ++i)
 	{
 		struct pgm_edge* e = &g->edges[n->out[i]];
-		ssize_t bytes = write(e->fd_out, (void*)&msg, sizeof(msg));
+		ssize_t bytes;
+
+		if(msg == TOKEN)
+		{
+			assert(e->nr_produce <= (int)MAX_PRODUCE);
+			bytes = write(e->fd_out, (void*)&TOKEN_BUF[0], sizeof(TOKEN_BUF[0])*e->nr_produce);
+		}
+		else
+		{
+			bytes = write(e->fd_out, (void*)&msg, sizeof(msg));
+		}
 		
 		if(bytes != sizeof(msg))
 		{
@@ -1168,14 +1199,16 @@ static eWaitStatus pgm_wait_for_edges(pgm_fd_mask_t* to_wait, struct pgm_graph* 
 	return WaitSuccess;
 }
 
+static bool has_terminate_token(token_t* buf, int nr_tokens)
+{
+	return (0 != memcmp(buf, TOKEN_BUF, nr_tokens*sizeof(token_t)));
+}
 
 static int pgm_recv(struct pgm_graph* g, struct pgm_node* n)
 {
 	int ret = -1;
 	ssize_t bytes;
-	uint8_t v;
-	
-//	fprintf(stdout, "+ %s has %d in edges.\n", n->name, n->nr_in);
+	token_t v[MAX_CONSUME];
 	
 	// brainfart. easier way?
 	pgm_fd_mask_t to_wait = ~((pgm_fd_mask_t)0) >> (sizeof(to_wait)*8 - n->nr_in);
@@ -1200,17 +1233,43 @@ retry:
 	// all edges are ready for reading
 	for(int i = 0; i < n->nr_in; ++i)
 	{
+		bool did_read_more = false;
 		struct pgm_edge* e = &g->edges[n->in[i]];
-		bytes = read(e->fd_in, &v, sizeof(v));
-		if(bytes > 0)
+		ssize_t bytesToRead = e->nr_consume * sizeof(token_t);
+	read_more:
+		bytes = read(e->fd_in, &v, bytesToRead);
+		if(bytes == bytesToRead)
 		{
-			;
+			if(has_terminate_token(v, e->nr_consume))
+				return TERMINATE;
+		}
+		else if(bytes > 0)
+		{
+			if(has_terminate_token(v, bytes/sizeof(token_t)))
+			{
+				return TERMINATE;
+			}
+			else
+			{
+				did_read_more = true;
+				bytesToRead -= bytes;
+				goto read_more;
+			}
 		}
 		else if(bytes == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
 		{
-			fprintf(stderr, "PGM warning: spurious return from select() for "
-					"edge %s/%s of node %s/%s. Error %d: %s\n",
-					g->name, e->name, g->name, n->name, errno, strerror(errno));
+			if(!did_read_more)
+			{
+				fprintf(stderr, "PGM warning: spurious return from select() for "
+						"edge %s/%s of node %s/%s. Error %d: %s\n",
+						g->name, e->name, g->name, n->name, errno, strerror(errno));
+			}
+			else
+			{
+				fprintf(stderr, "PGM warning: failed to read expected number of tokens: tokens lost/leaked! "
+						"edge %s/%s of node %s/%s. Error %d: %s\n",
+						g->name, e->name, g->name, n->name, errno, strerror(errno));
+			}
 			to_wait = ~((uint32_t)0) >> (sizeof(to_wait)*8 - (i + 1));
 			goto retry;
 		}
@@ -1220,11 +1279,6 @@ retry:
 					"node %s/%s. Error %d: %s\n",
 					g->name, e->name, g->name, n->name, errno, strerror(errno));
 			goto out;
-		}
-		
-		if(TERMINATE == v)
-		{
-			return TERMINATE;
 		}
 	}
 	

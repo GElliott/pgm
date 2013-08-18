@@ -9,6 +9,7 @@
 
 #include <boost/program_options.hpp>
 #include <boost/algorithm/string.hpp>
+#include <boost/math/common_factor.hpp>
 
 #include "pgm.h"
 #include "litmus.h"
@@ -34,6 +35,15 @@ exit_np();
 #else
 #define nonpreemptive(statements) statements
 #endif
+
+struct node_compare
+{
+	bool operator()(const node_t& a, const node_t& b) const
+	{
+		assert(a.graph == b.graph);
+		return(a.node < b.node);
+	}
+};
 
 struct rt_config
 {
@@ -112,12 +122,11 @@ void work_thread(rt_config cfg)
 			else
 			{
 				fprintf(stdout, "- %d fires\n", cfg.node.node);
+
 				CheckError(pgm_complete(cfg.node));
+				sleep_next_period();
 			}
 		}
-
-		if(isRoot)
-			sleep_next_period();
 	} while(ret != TERMINATE);
 
 	fprintf(stdout, "- %d terminates\n", cfg.node.node);
@@ -129,20 +138,34 @@ void work_thread(rt_config cfg)
 	CheckError(pgm_release_node(cfg.node));
 }
 
+std::string make_edge_name(const std::string& a, const std::string& b)
+{
+	return std::string("edge_") + a + std::string("_") + b;
+}
+
 void parse_graph_description(
 				const std::string& desc,
 				const graph_t& g,
 				std::vector<node_t>& nodes,
 				std::vector<edge_t>& edges)
 {
-	// function does not need to be fast!
-
-	std::set<std::string> nodeNames; // set to ensure uniqueness
-	std::map<std::string, node_t> nodeMap;
-
 	// create all the nodes. this must be done before
 	// the edges.
-	boost::split(nodeNames, desc, boost::is_any_of(",") || boost::is_any_of(":"));
+	// function does not need to be fast!
+
+	// strip token information
+	std::vector<std::string> nodeNameChunks;
+	std::set<std::string> nodeNames; // set to ensure uniqueness
+	boost::split(nodeNameChunks, desc, boost::is_any_of(",") || boost::is_any_of(":"));
+	for(auto nStr(nodeNameChunks.begin()); nStr != nodeNameChunks.end(); ++nStr)
+	{
+		std::vector<std::string> tokenDesc;
+		boost::split(tokenDesc, *nStr, boost::is_any_of("."));
+		nodeNames.insert(tokenDesc[0]);
+	}
+
+	// process each uniquely named node
+	std::map<std::string, node_t> nodeMap;
 	for(auto nStr(nodeNames.begin()); nStr != nodeNames.end(); ++nStr)
 	{
 		node_t n;
@@ -158,18 +181,187 @@ void parse_graph_description(
 	{
 		std::vector<std::string> nodePair;
 		boost::split(nodePair, *eStr, boost::is_any_of(":"));
-		if(nodePair.size() != 2)
+		if(nodePair.size() > 2)
+		{
 			throw std::runtime_error(std::string("Invalid edge description: ") + *eStr);
-		
+		}
+		else if(nodePair.size() == 1)
+		{
+			// assume single-node graph
+			continue;
+		}
+
+		int nr_produce = 1;
+		int nr_consume = 1;
+		int nr_threshold = 1;
+		std::vector<std::string> tokenDesc;
+		boost::split(tokenDesc, nodePair[0], boost::is_any_of("."));
+		if(tokenDesc.size() > 1)
+		{
+			if(tokenDesc.size() != 2)
+			{
+				throw std::runtime_error(std::string("Invalid produce description: " + nodePair[0]));
+			}
+			nr_produce = boost::lexical_cast<int>(tokenDesc[1]);
+			nodePair[0] = tokenDesc[0];
+		}
+		tokenDesc.clear();
+		boost::split(tokenDesc, nodePair[1], boost::is_any_of("."));
+		if(tokenDesc.size() > 1)
+		{
+			if(tokenDesc.size() > 4)
+			{
+				throw std::runtime_error(std::string("Invalid consume description: " + nodePair[1]));
+			}
+			nr_consume = boost::lexical_cast<int>(tokenDesc[1]);
+			if(tokenDesc.size() == 3)
+			{
+				nr_threshold = boost::lexical_cast<int>(tokenDesc[2]);
+			}
+			nodePair[1] = tokenDesc[0];
+		}
+
 		edge_t e;
 		CheckError(pgm_init_edge(&e, nodeMap[nodePair[0]], nodeMap[nodePair[1]],
-				(std::string("edge_") + nodePair[0] + std::string("_") + nodePair[1]).c_str()));
+				make_edge_name(nodePair[0], nodePair[1]).c_str(),
+				nr_produce, nr_consume, nr_threshold));
 		edges.push_back(e);
+
+//		printf("edge %s: p:%d c:%d t:%d\n",
+//				make_edge_name(nodePair[0], nodePair[1]).c_str(),
+//				nr_produce, nr_consume, nr_threshold);
 	}
 
 	if(!pgm_is_dag(g))
 	{
 		throw std::runtime_error(std::string("graph is not acyclic"));
+	}
+}
+
+void parse_graph_rates(const std::string& rateString, graph_t g, std::map<node_t, double, node_compare>& periods_ms)
+{
+	// Computations must be done on integral values. We use microseconds,
+	// but we assume the rates string is expressed in milliseconds.
+	//
+	// See Sec. 3.1 of "Supporting Soft Real-TIme DAG-based Systems on
+    // Multiprocessors with No Utilization Loss" for formulas
+
+	struct rate
+	{
+		uint64_t y; // interval (microseconds)
+		uint64_t x; // number of arrivials in interval y
+	};
+
+	std::set<std::string> tovisit;
+	std::map<std::string, rate> rateMap;
+
+	std::vector<std::string> nodeTokens;
+	boost::split(nodeTokens, rateString, boost::is_any_of(","));
+
+	// initialize rates for the root tasks
+	for(auto iter = nodeTokens.begin(); iter != nodeTokens.end(); ++iter)
+	{
+		std::vector<std::string> rateTokens;
+		boost::split(rateTokens, *iter, boost::is_any_of(":"));
+
+		if(rateTokens.size() != 3)
+			throw std::runtime_error(std::string("Invalid rate: ") + *iter);
+
+		struct rate r =
+		{
+			.y = (uint64_t)round(ms2us(boost::lexical_cast<double>(rateTokens[2]))),
+			.x = boost::lexical_cast<uint64_t>(rateTokens[1])
+		};
+
+		rateMap.insert(std::make_pair(std::string(rateTokens[0]), r));
+		tovisit.insert(rateTokens[0]);
+	}
+
+	// iteratively compute rates for all nodes
+	while(!tovisit.empty())
+	{
+		auto thisNode = tovisit.begin();
+		auto thisNodeRate = rateMap[*thisNode];
+		node_t n;
+
+		CheckError(pgm_find_node(&n, g, thisNode->c_str()));
+		tovisit.erase(thisNode);
+
+		node_t* successors = NULL;
+		int numSuccessors;
+		CheckError(pgm_find_successors(n, &successors, &numSuccessors));
+		if(numSuccessors == 0)
+			continue;
+
+		for(int i = 0; i < numSuccessors; ++i)
+		{
+			const std::string sname(pgm_name(successors[i]));
+			assert(!sname.empty());
+
+			edge_t e;
+			CheckError(pgm_find_edge(&e, n, successors[i],
+				make_edge_name(std::string(pgm_name(n)), sname).c_str()));
+
+			int produce, consume;
+			produce = pgm_nr_produce(e);
+			CheckError((produce < 1) ? -1 : 0);
+			consume = pgm_nr_consume(e);
+			CheckError((consume < 1) ? -1 : 0);
+			uint64_t y = ((uint64_t)consume * thisNodeRate.y) / (boost::math::gcd(produce*thisNodeRate.x, (uint64_t)consume));
+
+			auto found = rateMap.find(sname);
+			if(found != rateMap.end())
+			{
+				struct rate oldRate = found->second;
+				y = boost::math::lcm(y, oldRate.y);
+				uint64_t x = (y * produce * thisNodeRate.x) / (consume * thisNodeRate.y);
+				if(y != oldRate.y || x != oldRate.x)
+				{
+					struct rate newRate = {.y = y, .x = x};
+					found->second = newRate;
+					tovisit.insert(sname);
+				}
+			}
+			else
+			{
+				uint64_t x = (y * produce * thisNodeRate.x) / (consume * thisNodeRate.y);
+				struct rate newRate = {.y = y, .x = x};
+				rateMap[sname] = newRate;
+				tovisit.insert(sname);
+			}
+		}
+
+		free(successors);
+	}
+
+	for(auto iter = rateMap.begin(), theEnd = rateMap.end();
+		iter != theEnd;
+		++iter)
+	{
+		node_t n;
+		CheckError(pgm_find_node(&n, g, iter->first.c_str()));
+		periods_ms[n] = us2ms((double)(iter->second.y)/iter->second.x);
+
+//		printf("%s: x:%d y:%d d:%f\n",
+//			iter->first.c_str(), (int)iter->second.x, (int)iter->second.y, periods_ms[n]);
+	}
+}
+
+void parse_graph_exec(const std::string& execs, graph_t g, std::map<node_t, double, node_compare>& exec_ms)
+{
+	std::vector<std::string> nodeNames;
+	boost::split(nodeNames, execs, boost::is_any_of(","));
+	for(auto nStr(nodeNames.begin()); nStr != nodeNames.end(); ++nStr)
+	{
+		std::vector<std::string> nodeExecPair;
+		boost::split(nodeExecPair, *nStr, boost::is_any_of(":"));
+
+		if(nodeExecPair.size() != 2)
+			throw std::runtime_error(std::string("Invalid execution time: " + *nStr));
+
+		node_t n;
+		CheckError(pgm_find_node(&n, g, nodeExecPair[0].c_str()));
+		exec_ms[n] = boost::lexical_cast<double>(nodeExecPair[1]);	
 	}
 }
 
@@ -193,10 +385,15 @@ int main(int argc, char** argv)
 		("scale,s", program_options::value<double>()->default_value(1.0), "Change time scale")
 		("graphfile", program_options::value<std::string>(), "File that describes PGM graph")
 		("name,n", program_options::value<std::string>()->default_value(""), "Graph name")
-		("graph,g", program_options::value<std::string>(), "Graph description")
+		("graph,g", program_options::value<std::string>(),
+		 	"Graph edge description: [<name>[.produce]:<name>[.consume[.threshld]],]+ (do '<name>:' for single-node graph)")
+		("rates,r", program_options::value<std::string>(),
+		 	"Arrivial rates: [<name>:<#>:<interval>,]+ (interval in ms) (only for source nodes)")
+		("execution,x", program_options::value<std::string>(),
+		 	"Execution time requirements for nodes. [<name>:<time>,]+ (time in ms)")
 		("graphDir,d", program_options::value<std::string>()->default_value("/dev/shm/graphs"),
 		 				"Directory to hold PGM FIFOs")
-		("continuation", "Graph depends on a graph of another process")
+		("continuation", "Graph depends on a sub-graph of another process")
 		;
 
 	program_options::variables_map vm;
@@ -243,6 +440,8 @@ int main(int argc, char** argv)
 	graph_t g;
 	std::vector<node_t> nodes;
 	std::vector<edge_t> edges;
+	std::map<node_t, double, node_compare> periods;
+	std::map<node_t, double, node_compare> executions;
 
 	try
 	{
@@ -260,6 +459,10 @@ int main(int argc, char** argv)
 					assert(false);  // graph must be named if we're not master
 
 			parse_graph_description(vm["graph"].as<std::string>(), g, nodes, edges);
+			parse_graph_rates(vm["rates"].as<std::string>(), g, periods);
+			parse_graph_exec(vm["execution"].as<std::string>(), g, executions);
+
+			exit(-1);
 		}
 		else if(vm.count("graphfile") != 0)
 		{
@@ -279,21 +482,22 @@ int main(int argc, char** argv)
 	init_litmus(); // prepare litmus
 #endif
 
-	// TODO: COMPUTE EXECUTION TIMES/PERIODS FOR EACH NODE
-	cfg.period_ns = ms2ns(1000);
-	cfg.execution_ns = ms2ns(100);
-
 	// spawn of a thread for each node in graph
 	std::vector<std::thread> threads;
 	for(auto iter(nodes.begin() + 1); iter != nodes.end(); ++iter)
 	{
 		rt_config nodeCfg = cfg;
 		nodeCfg.node = *iter;
+		nodeCfg.period_ns = ms2ns(periods[*iter]);
+		nodeCfg.execution_ns = ms2ns(executions[*iter]);
 		threads.push_back(std::thread(work_thread, nodeCfg));
 	}
 
 	// main thread handles first node
+	// TODO: enforce that first node is a src node
 	cfg.node = nodes[0];
+	cfg.period_ns = ms2ns(periods[nodes[0]]);
+	cfg.execution_ns = ms2ns(executions[nodes[0]]);
 	work_thread(cfg);
 
 	for(auto t(threads.begin()); t != threads.end(); ++t)

@@ -43,7 +43,8 @@ int pgm_destroy_graph(graph_t graph);
 
 int pgm_init_node(node_t* node, graph_t graph, const char* name);
 int pgm_find_node(node_t* node, graph_t graph, const char* name);
-int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer, const char* name);
+int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer, const char* name,
+					int produce = 1, int consume = 1, int threshold = 1);
 int pgm_find_edge(edge_t* edge, node_t producer, node_t consumer, const char* name);
 
 int pgm_claim_node(node_t node, pid_t tid = 0);
@@ -56,6 +57,15 @@ int pgm_terminate(node_t node);
 int pgm_degree(node_t node);
 int pgm_degree_in(node_t node);
 int pgm_degree_out(node_t node);
+
+const char* pgm_name(node_t node);
+int pgm_nr_produce(edge_t edge);
+int pgm_nr_consume(edge_t edge);
+int pgm_nr_threshold(edge_t edge);
+
+/* returns buffer list of nodes. caller must free() buffer */
+int pgm_find_successors(node_t n, node_t** successors, int* num);
+int pgm_find_predecessors(node_t, node_t** predecessors, int* num);
 
 int pgm_is_dag(graph_t graph);
 
@@ -89,11 +99,12 @@ static int pgm_find_node(node_t* node, graph_t graph, unsigned int numerical_nam
 	return pgm_find_node(node, graph, name);
 }
 
-static int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer, unsigned int numerical_name)
+static int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer, unsigned int numerical_name,
+				int produce = 1, int consume = 1, int threshold = 1)
 {
 	char name[PGM_EDGE_NAME_LEN];
 	snprintf(name, PGM_EDGE_NAME_LEN, "%x", numerical_name);
-	return pgm_init_edge(edge, producer, consumer, name);
+	return pgm_init_edge(edge, producer, consumer, name, produce, consume, threshold);
 }
 
 static int pgm_find_edge(edge_t* edge, node_t producer, node_t consumer, unsigned int numerical_name)

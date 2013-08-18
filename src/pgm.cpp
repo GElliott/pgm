@@ -27,6 +27,10 @@ struct pgm_edge
 	int producer;
 	int consumer;
 	
+	int nr_produce;
+	int nr_consume;
+	int nr_threshold;
+
 	// fd_in and fd_out may be the same
 	// if different ends of the FIFO are
 	// open by different processes.
@@ -586,7 +590,8 @@ out:
 	return ret;
 }
 
-int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer, const char* name)
+int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer, const char* name,
+	int produce, int consume, int threshold)
 {
 	int ret = -1;
 	struct pgm_graph* g;
@@ -637,7 +642,10 @@ int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer, const char* na
 	strncpy(e->name, name, len);
 	e->producer = producer.node;
 	e->consumer = consumer.node;
-	
+	e->nr_produce = produce;
+	e->nr_consume = consume;
+	e->nr_threshold = threshold;
+
 	ret = create_fifo(g, np, nc, e);
 	
 out_unlock:
@@ -668,7 +676,7 @@ int pgm_find_edge(edge_t* edge, node_t producer, node_t consumer, const char* na
 			int found = 0;
 			pgm_node *np = &g->nodes[producer.node];
 			pgm_node *nc = &g->nodes[consumer.node];
-			
+		
 			for(int j = 0; j < np->nr_out; ++j)
 			{
 				if(i == np->out[j])
@@ -686,7 +694,7 @@ int pgm_find_edge(edge_t* edge, node_t producer, node_t consumer, const char* na
 				}
 			}
 			
-			if(found != 0)
+			if(found != 2)
 				goto out_unlock;
 			
 			edge->graph = producer.graph;
@@ -701,6 +709,70 @@ out_unlock:
 out:
 	return ret;
 }
+
+const char* pgm_name(node_t node)
+{
+	const char* name = NULL;
+
+	struct pgm_graph* g;
+	struct pgm_node* n;
+
+	if(!is_valid_graph(node.graph))
+		goto out;
+
+	g = &graphs[node.graph];
+	n = &g->nodes[node.node];
+	name = n->name;
+
+out:
+	return name;
+}
+
+int pgm_nr_produce(edge_t edge)
+{
+	int produced = -1;
+	struct pgm_graph* g;
+
+	if(!is_valid_graph(edge.graph))
+		goto out;
+
+	g = &graphs[edge.graph];
+	produced = g->edges[edge.edge].nr_produce;
+
+out:
+	return produced;
+}
+
+int pgm_nr_consume(edge_t edge)
+{
+	int consumed = -1;
+	struct pgm_graph* g;
+
+	if(!is_valid_graph(edge.graph))
+		goto out;
+
+	g = &graphs[edge.graph];
+	consumed = g->edges[edge.edge].nr_consume;
+
+out:
+	return consumed;
+}
+
+int pgm_nr_threshold(edge_t edge)
+{
+	int threshold = -1;
+	struct pgm_graph* g;
+
+	if(!is_valid_graph(edge.graph))
+		goto out;
+
+	g = &graphs[edge.graph];
+	threshold = g->edges[edge.edge].nr_threshold;
+
+out:
+	return threshold;
+}
+
 
 int pgm_degree(node_t node)
 {
@@ -748,6 +820,78 @@ int pgm_degree_out(node_t node)
 	g = &graphs[node.graph];
 	n = &g->nodes[node.node];
 	ret = n->nr_out;
+
+out:
+	return ret;
+}
+
+int pgm_find_successors(node_t node, node_t** successors, int* num)
+{
+	int ret = -1;
+	struct pgm_graph* g;
+	struct pgm_node* n;
+
+	if(!is_valid_graph(node.graph))
+		goto out;
+
+	ret = 0;
+	g = &graphs[node.graph];
+	n = &g->nodes[node.node];
+
+	*num = n->nr_out;
+	if(*num == 0)
+	{
+		*successors = NULL;
+		goto out;
+	}
+
+	*successors = (node_t*)malloc((*num) * sizeof(node_t));
+	for(int i = 0; i < *num; ++i)
+	{
+		const pgm_node* const _succ = &g->nodes[g->edges[n->out[i]].consumer];
+		node_t succ =
+		{
+			.graph = node.graph,
+			.node = (int)(_succ - &g->nodes[0])
+		};
+		(*successors)[i] = succ;
+	}
+
+out:
+	return ret;
+}
+
+int pgm_find_predecessors(node_t node, node_t** predecessors, int* num)
+{
+	int ret = -1;
+	struct pgm_graph* g;
+	struct pgm_node* n;
+
+	if(!is_valid_graph(node.graph))
+		goto out;
+
+	ret = 0;
+	g = &graphs[node.graph];
+	n = &g->nodes[node.node];
+
+	*num = n->nr_in;
+	if(*num == 0)
+	{
+		*predecessors = NULL;
+		goto out;
+	}
+
+	*predecessors = (node_t*)malloc((*num) * sizeof(node_t));
+	for(int i = 0; i < *num; ++i)
+	{
+		const pgm_node* const _pred = &g->nodes[g->edges[n->in[i]].producer];
+		node_t pred =
+		{
+			.graph = node.graph,
+			.node = (int)(_pred - &g->nodes[0])
+		};
+		(*predecessors)[i] = pred;
+	}
 
 out:
 	return ret;

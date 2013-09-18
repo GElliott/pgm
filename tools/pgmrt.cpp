@@ -238,6 +238,82 @@ void parse_graph_description(
 	}
 }
 
+struct rate
+{
+	uint64_t y; // interval (microseconds)
+	uint64_t x; // number of arrivials in interval y
+
+	bool operator==(const rate& other) const
+	{
+		return (x*other.y == other.x*y);
+	}
+};
+
+void validate_rate(node_t n, const std::map<std::string, rate>& rates)
+{
+	bool valid = true;
+
+	node_t *preds;
+	int nr_preds;
+	pgm_find_predecessors(n, &preds, &nr_preds);
+
+	uint64_t scale = 1;
+	std::vector<std::pair<node_t, rate> > preds_w_rates;
+	preds_w_rates.reserve(nr_preds);
+	for(int i = 0; i < nr_preds; ++i)
+	{
+		auto p = rates.find(std::string(pgm_name(preds[i])));
+		if(p != rates.end())
+		{
+			scale *= p->second.y;
+			preds_w_rates.push_back(std::make_pair(preds[i], p->second));
+		}
+	}
+
+	for(int i = 1; i < (int)preds_w_rates.size(); ++i)
+	{
+		const rate& prev = preds_w_rates[i-1].second;
+		const rate& cur = preds_w_rates[i].second;
+
+		edge_t e_prev, e_cur;
+		pgm_find_edge(&e_prev, n, preds_w_rates[i-1].first,
+			make_edge_name(std::string(pgm_name(preds_w_rates[i-1].first)), std::string(pgm_name(n))).c_str());
+		pgm_find_edge(&e_cur, n, preds_w_rates[i].first,
+			make_edge_name(std::string(pgm_name(preds_w_rates[i].first)), std::string(pgm_name(n))).c_str());
+
+		rate a = {pgm_nr_produce(e_prev) * prev.x * scale, prev.y * pgm_nr_consume(e_prev)};
+		rate b = {pgm_nr_produce(e_cur) * cur.x * scale, cur.y * pgm_nr_consume(e_cur)};
+
+		uint64_t p1 = (pgm_nr_produce(e_prev) * prev.x*(scale/prev.y)) / pgm_nr_consume(e_prev);
+		uint64_t p2 = (pgm_nr_produce(e_cur) * cur.x*(scale/cur.y)) / pgm_nr_consume(e_cur);
+
+		bool __valid = (a == b);
+
+		if(!__valid)
+		{
+			printf("%s (%lu = %lu * (%lu / %lu)) "
+				  "and %s (%lu = %lu * (%lu / %lu)) incompatible\n",
+				  pgm_name(preds_w_rates[i-1].first),
+				  p1, prev.x, scale, prev.y,
+				  pgm_name(preds_w_rates[i].first),
+				  p2, cur.x, scale, cur.y
+				  );
+			valid = __valid;
+		}
+	}
+
+	if(valid)
+	{
+		printf("%s has valid predecessor execution rates\n", pgm_name(n));
+	}
+	else
+	{
+		printf("%s has INvalid predecessor execution rates!!!\n", pgm_name(n));
+	}
+
+	free(preds);
+}
+
 void parse_graph_rates(const std::string& rateString, graph_t g, std::map<node_t, double, node_compare>& periods_ms)
 {
 	// Computations must be done on integral values. We use microseconds,
@@ -245,12 +321,6 @@ void parse_graph_rates(const std::string& rateString, graph_t g, std::map<node_t
 	//
 	// See Sec. 3.1 of "Supporting Soft Real-TIme DAG-based Systems on
     // Multiprocessors with No Utilization Loss" for formulas
-
-	struct rate
-	{
-		uint64_t y; // interval (microseconds)
-		uint64_t x; // number of arrivials in interval y
-	};
 
 	std::set<std::string> tovisit;
 	std::map<std::string, rate> rateMap;
@@ -267,7 +337,7 @@ void parse_graph_rates(const std::string& rateString, graph_t g, std::map<node_t
 		if(rateTokens.size() != 3)
 			throw std::runtime_error(std::string("Invalid rate: ") + *iter);
 
-		struct rate r =
+		rate r =
 		{
 			.y = (uint64_t)round(ms2us(boost::lexical_cast<double>(rateTokens[2]))),
 			.x = boost::lexical_cast<uint64_t>(rateTokens[1])
@@ -312,12 +382,15 @@ void parse_graph_rates(const std::string& rateString, graph_t g, std::map<node_t
 			auto found = rateMap.find(sname);
 			if(found != rateMap.end())
 			{
-				struct rate oldRate = found->second;
+				validate_rate(successors[i], rateMap);
+
+				rate oldRate = found->second;
 				y = boost::math::lcm(y, oldRate.y);
-				uint64_t x = (y * produce * thisNodeRate.x) / (consume * thisNodeRate.y);
-				if(y != oldRate.y || x != oldRate.x)
+//				printf("%s: (parent: %s) old:(%d,%d) new:(%d,%d)\n", sname.c_str(), pgm_name(n), (int)oldRate.x, (int)oldRate.y, (int)x, (int)y);
+				if(y != oldRate.y)
 				{
-					struct rate newRate = {.y = y, .x = x};
+					uint64_t x = (y * produce * thisNodeRate.x) / (consume * thisNodeRate.y);
+					rate newRate = {.y = y, .x = x};
 					found->second = newRate;
 					tovisit.insert(sname);
 				}
@@ -325,7 +398,8 @@ void parse_graph_rates(const std::string& rateString, graph_t g, std::map<node_t
 			else
 			{
 				uint64_t x = (y * produce * thisNodeRate.x) / (consume * thisNodeRate.y);
-				struct rate newRate = {.y = y, .x = x};
+//				printf("%s: (parent: %s) new:(%d,%d)\n", sname.c_str(), pgm_name(n), (int)x, (int)y);
+				rate newRate = {.y = y, .x = x};
 				rateMap[sname] = newRate;
 				tovisit.insert(sname);
 			}
@@ -342,8 +416,8 @@ void parse_graph_rates(const std::string& rateString, graph_t g, std::map<node_t
 		CheckError(pgm_find_node(&n, g, iter->first.c_str()));
 		periods_ms[n] = us2ms((double)(iter->second.y)/iter->second.x);
 
-//		printf("%s: x:%d y:%d d:%f\n",
-//			iter->first.c_str(), (int)iter->second.x, (int)iter->second.y, periods_ms[n]);
+		printf("%s: x:%d y:%d d:%f\n",
+			iter->first.c_str(), (int)iter->second.x, (int)iter->second.y, periods_ms[n]);
 	}
 }
 
@@ -460,9 +534,9 @@ int main(int argc, char** argv)
 
 			parse_graph_description(vm["graph"].as<std::string>(), g, nodes, edges);
 			parse_graph_rates(vm["rates"].as<std::string>(), g, periods);
+			exit(-1);
 			parse_graph_exec(vm["execution"].as<std::string>(), g, executions);
 
-			exit(-1);
 		}
 		else if(vm.count("graphfile") != 0)
 		{

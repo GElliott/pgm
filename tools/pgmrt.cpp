@@ -14,7 +14,7 @@
 #include "pgm.h"
 #include "litmus.h"
 
-#define NO_LITMUS
+//#define NO_LITMUS
 
 using namespace boost;
 
@@ -28,12 +28,12 @@ do { \
 } while(0)
 
 #ifndef NO_LITMUS
-#define nonpreemptive(statements) \
-enter_np(); \
+#define boosted_pgm_wait(statements) \
+enter_pgm_wait(); \
 statements \
-exit_np();
+exit_pgm_wait();
 #else
-#define nonpreemptive(statements) statements
+#define boosted_pgm_wait(statements) statements
 #endif
 
 struct node_compare
@@ -85,8 +85,12 @@ void work_thread(rt_config cfg)
 	ret = task_mode(LITMUS_RT_TASK);
 	assert(ret == 0);
 
+	if(isRoot)
+		fprintf(stdout, "(i) %s is a root\n", pgm_name(cfg.node));
+
 	if(cfg.syncRelease)
 	{
+		fprintf(stdout, "(x) %s waiting for release\n", pgm_name(cfg.node));
 		ret = wait_for_ts_release();
 		assert(ret == 0);
 	}
@@ -102,7 +106,8 @@ void work_thread(rt_config cfg)
 		// select()).
 		if(!isRoot)
 		{
-			nonpreemptive(ret = pgm_wait(cfg.node););
+			fprintf(stdout, "(x) %s waits for tokens\n", pgm_name(cfg.node));
+			boosted_pgm_wait(ret = pgm_wait(cfg.node););
 		}
 
 		if(ret != TERMINATE)
@@ -121,7 +126,7 @@ void work_thread(rt_config cfg)
 			}
 			else
 			{
-				fprintf(stdout, "- %d fires\n", cfg.node.node);
+				fprintf(stdout, "(+) %s fires for %d time\n", pgm_name(cfg.node), count);
 
 				CheckError(pgm_complete(cfg.node));
 				sleep_next_period();
@@ -129,7 +134,7 @@ void work_thread(rt_config cfg)
 		}
 	} while(ret != TERMINATE);
 
-	fprintf(stdout, "- %d terminates\n", cfg.node.node);
+	fprintf(stdout, "(-) %s terminates\n", pgm_name(cfg.node));
 	
 #ifndef NO_LITMUS
 	task_mode(BACKGROUND_TASK);
@@ -534,7 +539,6 @@ int main(int argc, char** argv)
 
 			parse_graph_description(vm["graph"].as<std::string>(), g, nodes, edges);
 			parse_graph_rates(vm["rates"].as<std::string>(), g, periods);
-			exit(-1);
 			parse_graph_exec(vm["execution"].as<std::string>(), g, executions);
 
 		}

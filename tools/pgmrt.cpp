@@ -7,6 +7,9 @@
 #include <cassert>
 #include <cstdint>
 
+// TODO: Use std::chrono routines instead.
+#include <sys/time.h>
+
 #include <boost/program_options.hpp>
 #include <boost/algorithm/string.hpp>
 #include <boost/math/common_factor.hpp>
@@ -36,6 +39,9 @@ exit_pgm_wait();
 #define boosted_pgm_wait(statements) statements
 #endif
 
+#define likely(x)   __builtin_expect((x), 1)
+#define unlikely(x) __builtin_expect((x), 0)
+
 struct node_compare
 {
 	bool operator()(const node_t& a, const node_t& b) const
@@ -55,14 +61,84 @@ struct rt_config
 	uint64_t period_ns;
 	uint64_t execution_ns;
 
+	uint64_t duration_ns;
+
 	node_t node;
 };
+
+uint64_t cputime_ns(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+	return (s2ns((uint64_t)ts.tv_sec) + ts.tv_nsec);
+}
+
+uint64_t wctime_ns(void)
+{
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	return (s2ns((uint64_t)tv.tv_sec) + us2ns((uint64_t)tv.tv_usec));
+}
+
+const size_t NUMS = 4096;
+int64_t num[NUMS];
+int64_t loop_once(void)
+{
+	int64_t s = 0;
+	for (size_t i = 0; i < NUMS; ++i)
+		s += num[i]++;
+	return s;
+}
+
+uint64_t loop_for(uint64_t exec_time, uint64_t emergency_exit)
+{
+	uint64_t lastLoop = 0;
+	uint64_t start = cputime_ns();
+	uint64_t now = start;
+	uint64_t loopStart;
+	uint64_t tmp = 0;
+
+	/* a tight loop that touches virtually no data */
+	while (now + lastLoop < start + exec_time) {
+		loopStart = now;
+		tmp += loop_once();
+		now = cputime_ns();
+		lastLoop = now - loopStart;
+		if (unlikely(emergency_exit && wctime_ns() > emergency_exit)) {
+			throw std::runtime_error("Emergency Exit");
+		}
+	}
+
+	return tmp;
+}
+
+bool job(const rt_config& cfg, uint64_t programEnd)
+{
+	bool keepGoing = true;
+	if (unlikely(wctime_ns() > programEnd)) {
+		keepGoing = false;
+	}
+	else {
+		uint64_t emergency_exit = programEnd + s2ns(1);
+
+		try {
+			(void)loop_for(cfg.execution_ns, emergency_exit);
+		}
+		catch(const std::runtime_error& e) {
+			fprintf(stderr, "!!! pgmrt/%d emergency exit!\n", gettid());
+			fprintf(stderr, "Something is seriously wrong! Do not ignore this.\n");
+			keepGoing = false;
+		}
+	}
+	return keepGoing;
+}
 
 void work_thread(rt_config cfg)
 {
 	int ret = 0;
 
 	bool isRoot = (pgm_degree_in(cfg.node) == 0);
+	uint64_t bailoutTime = wctime_ns() + cfg.duration_ns;
 
 	// claim the node and open up FIFOs, etc.
 	CheckError(pgm_claim_node(cfg.node));
@@ -97,6 +173,7 @@ void work_thread(rt_config cfg)
 #endif
 
 	int count = 0;
+	bool keepGoing;
 	do {
 		// We become non-preemptive/boosted when we call
 		// pgm_wait() to ensure BOUNDED priority inversions.
@@ -115,18 +192,18 @@ void work_thread(rt_config cfg)
 			CheckError(ret);
 
 			// do job here
-			if(isRoot)
-				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			keepGoing = job(cfg, bailoutTime);
 			++count;
 
-			if(isRoot && count > 10)
+			// only allow roots to trigger a graph-wide bailout
+			if(isRoot && !keepGoing)
 			{
 				CheckError(pgm_terminate(cfg.node));
 				break;
 			}
 			else
 			{
-				fprintf(stdout, "(+) %s fires for %d time\n", pgm_name(cfg.node), count);
+				fprintf(stdout, "(+) %s fired for %d time\n", pgm_name(cfg.node), count);
 
 				CheckError(pgm_complete(cfg.node));
 				sleep_next_period();
@@ -472,14 +549,19 @@ int main(int argc, char** argv)
 		 	"Execution time requirements for nodes. [<name>:<time>,]+ (time in ms)")
 		("graphDir,d", program_options::value<std::string>()->default_value("/dev/shm/graphs"),
 		 				"Directory to hold PGM FIFOs")
+		("duration", program_options::value<double>()->default_value(-1), "Time to run (seconds).")
 		("continuation", "Graph depends on a sub-graph of another process")
 		;
+
+	program_options::positional_options_description pos;
+	pos.add("duration", -1);
 
 	program_options::variables_map vm;
 
 	try
 	{
-		program_options::store(program_options::parse_command_line(argc, argv, opts), vm);
+		program_options::store(program_options::command_line_parser(argc, argv).
+						options(opts).positional(pos).run(), vm);
 	}
 	catch(program_options::required_option& e)
 	{
@@ -507,7 +589,8 @@ int main(int argc, char** argv)
 		.clusterSize = vm["clusterSize"].as<int>(),
 		.budget = (vm.count("budget") != 0),
 		.period_ns = 0,
-		.execution_ns = 0
+		.execution_ns = 0,
+		.duration_ns = (uint64_t)s2ns(vm["duration"].as<double>())
 	};
 
 	std::string name = vm["name"].as<std::string>();

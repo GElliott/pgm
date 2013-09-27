@@ -24,7 +24,7 @@ LIBPGM = .
 flags-std      = -std=gnu++11
 flags-optim    = -O2 -march=native
 #flags-optim    = 
-flags-debug    = -g -Wall -Werror -Wno-unused-function
+flags-debug    = -Wall -Werror -Wno-unused-function
 flags-api      = -D_XOPEN_SOURCE=600 -D_GNU_SOURCE -pthread
 
 # architecture-specific flags
@@ -72,7 +72,7 @@ AR  := ${CROSS_COMPILE}${AR}
 # Targets
 
 all     = lib ${tools}
-tools   = basictest pgmrt
+tools   = basictest pgmrt pingpong
 
 .PHONY: all lib clean dump-config TAGS tags cscope help
 
@@ -124,6 +124,8 @@ lib-basictest = -lpthread -lm -lrt -lboost_filesystem-mt -lboost_system-mt
 obj-pgmrt = pgmrt.o
 lib-pgmrt = -lpthread -lm -lrt -lboost_filesystem-mt -lboost_system-mt -lboost_program_options-mt ${liblitmus-flags}
 
+obj-pingpong = pingpong.o
+lib-pingpong = -lpthread -lm -lrt -lboost_system-mt -lboost_thread-mt
 
 # ##############################################################################
 # Build everything that depends on liblitmus.

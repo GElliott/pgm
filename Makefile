@@ -23,7 +23,6 @@ LIBPGM = .
 # compiler flags
 flags-std      = -std=gnu++11
 flags-optim    = -O2 -march=native
-#flags-optim    = 
 flags-debug    = -Wall -Werror -Wno-unused-function
 flags-api      = -D_XOPEN_SOURCE=600 -D_GNU_SOURCE -pthread
 

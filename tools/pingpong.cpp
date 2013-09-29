@@ -25,6 +25,8 @@ using namespace std::chrono;
 int counter = 0;
 int thresh = 1000;
 
+int rtprio = sched_get_priority_max(SCHED_FIFO)/2;
+
 struct Args
 {
 	bool is_master;
@@ -55,7 +57,7 @@ void fifo_worker(Args args)
 	{
 		struct sched_param param;
 		memset(&param, 0, sizeof(param));
-		param.sched_priority = sched_get_priority_max(SCHED_FIFO)/2;
+		param.sched_priority = rtprio;
 		sched_setscheduler(0 /* self */, SCHED_FIFO, &param);
 
 		cpu_set_t* cpu_set = CPU_ALLOC(sysconf(_SC_NPROCESSORS_ONLN));
@@ -153,7 +155,7 @@ void mq_worker(Args args)
 	{
 		struct sched_param param;
 		memset(&param, 0, sizeof(param));
-		param.sched_priority = sched_get_priority_max(SCHED_FIFO)/2;
+		param.sched_priority = rtprio;
 		sched_setscheduler(0 /* self */, SCHED_FIFO, &param);
 
 		cpu_set_t* cpu_set = CPU_ALLOC(sysconf(_SC_NPROCESSORS_ONLN));
@@ -174,7 +176,7 @@ void mq_worker(Args args)
 		if(args.is_master)
 		{
 			++token;
-			ssize_t ret = mq_send(fd_out, (char*)&token, sizeof(token), 0);
+			ssize_t ret = mq_send(fd_out, (char*)&token, sizeof(token), rtprio);
 			assert(ret != -1);
 			while(!signalled)
 			{
@@ -190,7 +192,7 @@ void mq_worker(Args args)
 				signalled = (bread != -1 && bread != 0);
 			}
 			++token;
-			ssize_t ret = mq_send(fd_out, (char*)&token, sizeof(token), 0);
+			ssize_t ret = mq_send(fd_out, (char*)&token, sizeof(token), rtprio);
 			assert(ret != -1);
 		}
 	}

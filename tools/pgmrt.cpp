@@ -61,13 +61,21 @@ struct node_compare
 	}
 };
 
+struct edge_compare
+{
+	bool operator()(const edge_t& a, const edge_t& b) const
+	{
+		assert(a.graph == b.graph);
+		return(a.edge < b.edge);
+	}
+};
+
 struct rt_config
 {
 	bool syncRelease;
 	int cluster;
 	int clusterSize;
 	int budget;
-	int idx;
 
 	uint64_t period_ns;
 	uint64_t execution_ns;
@@ -77,55 +85,44 @@ struct rt_config
 	node_t node;
 };
 
-struct ws_config
+struct WorkingSet
 {
+	static std::map<edge_t, WorkingSet*, edge_compare> edgeToWs;
+
 	typedef int chunk_t;
 
-	volatile chunk_t* pArr; // volatile to ensure compiler doesn't optimize reads/writes away
+	volatile chunk_t* buf; // volatile to ensure compiler doesn't optimize reads/writes away
 	int num;
 	int cycle;
+
+	WorkingSet(): buf(NULL) {}
+
+	WorkingSet(int setSize, int _cycle = 1): buf(NULL), num(0), cycle(_cycle) {
+		if (setSize != 0) {
+			num = setSize/sizeof(WorkingSet::chunk_t) + (setSize % sizeof(WorkingSet::chunk_t) != 0);
+			buf = new chunk_t[cycle * num];
+		}
+	}
+
+	~WorkingSet()
+	{
+		delete [] const_cast<chunk_t*>(buf);
+	}
+
+	inline volatile WorkingSet::chunk_t* start(int c)
+	{
+		int offset = c % cycle;
+		return buf + offset;
+	}
+
+	inline volatile WorkingSet::chunk_t* end(int c)
+	{
+		return start(c) + num;
+	}
 };
 
-std::vector<ws_config> wssArray(PGM_MAX_NODES);
-std::map<node_t, int, node_compare> retrieveIndexByNode;
+std::map<edge_t, WorkingSet*, edge_compare> WorkingSet::edgeToWs;
 
-void init_working_set()
-{
-	for(auto iter = wssArray.begin(), theEnd = wssArray.end();
-		iter != theEnd;
-		++iter) {
-		*iter = {NULL, 0, 0};
-	}
-}
-
-void destroy_working_set(int idx)
-{
-	if (wssArray[idx].pArr == NULL)
-		return;
-
-	free((ws_config::chunk_t*)wssArray[idx].pArr);
-	wssArray[idx] = {NULL, 0, 0};
-
-	T("free for %d\n", idx);
-}
-
-void make_working_set(int idx, int setSize, int wsCycle)
-{
-	if (wssArray[idx].pArr != NULL)
-		destroy_working_set(idx);
-
-	int nElem = 0;
-	ws_config::chunk_t* p = NULL;
-	if (setSize != 0) {
-		nElem = setSize/sizeof(ws_config::chunk_t) + (setSize % sizeof(ws_config::chunk_t) != 0);
-		int nBytes = wsCycle * nElem * sizeof(ws_config::chunk_t);
-		p = (ws_config::chunk_t*)malloc(nBytes);
-
-		T("malloc %d bytes (%d per cycle) for %d\n", nBytes, nBytes/wsCycle, idx);
-	}
-
-	wssArray[idx] = {p, nElem, wsCycle};
-}
 
 uint64_t cputime_ns(void)
 {
@@ -217,43 +214,61 @@ uint64_t loop_for(uint64_t exec_time, uint64_t emergency_exit)
 	return tmp;
 }
 
-ws_config::chunk_t consume(int* pred, int num_pred, int job_num)
+inline WorkingSet::chunk_t __consume(WorkingSet* ws, int jobNum)
 {
-	int temp = 0;
-
-	for (int i = 0; i < num_pred; ++i) {
-		int offset = wssArray[pred[i]].num * (job_num % wssArray[pred[i]].cycle);
-		volatile ws_config::chunk_t* ws = wssArray[pred[i]].pArr + offset;
-		for (int j = 0; j < wssArray[pred[i]].num; ++j) {
-			temp += ws[j];
-		}
+	WorkingSet::chunk_t temp = 0;
+	for(volatile WorkingSet::chunk_t
+			*p = ws->start(jobNum),
+			*end = ws->end(jobNum);
+		p < end; ++p) {
+		temp += *p;
 	}
-
 	return temp;
 }
 
-void produce(int myid, ws_config::chunk_t towrite, int job_num)
+WorkingSet::chunk_t consume(WorkingSet** ws, int numWs, int jobNum)
 {
-	int offset = wssArray[myid].num * (job_num % wssArray[myid].cycle);
-	volatile ws_config::chunk_t* ws = wssArray[myid].pArr + offset;
-	for (int i = 0; i < wssArray[myid].num; ++i) {
-		ws[i] = towrite;
+	WorkingSet::chunk_t temp = 0;
+	for(int i = 0; i < numWs; ++i) {
+		temp += __consume(ws[i], jobNum);
+	}
+	return temp;
+}
+
+inline void __produce(WorkingSet* ws, WorkingSet::chunk_t toWrite, int jobNum)
+{
+	for(volatile WorkingSet::chunk_t
+			*p = ws->start(jobNum),
+			*end = ws->end(jobNum);
+		p < end; ++p) {
+		*p = toWrite;
 	}
 }
 
-bool job(const rt_config& cfg, int myid, int job_num, int* pred, int num_pred, uint64_t programEnd)
+void produce(WorkingSet** ws, int numWs, WorkingSet::chunk_t toWrite, int jobNum)
+{
+	for(int i = 0; i < numWs; ++i) {
+		__produce(ws[i], toWrite, jobNum);
+	}
+}
+
+bool job(const rt_config& cfg, int jobNum,
+	std::vector<WorkingSet*>& consumeList,
+	std::vector<WorkingSet*>& produceList,
+	uint64_t programEnd)
 {
 	bool keepGoing = true;
 	if (unlikely(wctime_ns() > programEnd)) {
 		keepGoing = false;
 	}
 	else {
-		ws_config::chunk_t temp;
+		WorkingSet::chunk_t temp = jobNum;
 
 		uint64_t emergency_exit = programEnd + s2ns(1);
 
 		// consume data from predecessors
-		temp = consume(pred, num_pred, job_num);
+		if(!consumeList.empty())
+			temp = consume(&consumeList[0], consumeList.size(), jobNum);
 
 		// execution time
 		try {
@@ -266,7 +281,8 @@ bool job(const rt_config& cfg, int myid, int job_num, int* pred, int num_pred, u
 		}
 
 		// produce data for successors
-		produce(myid, temp, job_num);
+		if(!produceList.empty())
+			produce(&produceList[0], produceList.size(), temp, jobNum);
 	}
 	return keepGoing;
 }
@@ -282,19 +298,39 @@ void work_thread(rt_config cfg)
 	CheckError(pgm_claim_node(cfg.node));
 
 
-	// get the lookup IDs for each predecessor node
-	int predecessorList[PGM_MAX_EDGES] = {0};
-	int numPredecessors;
+	std::vector<WorkingSet*> consumeWs, produceWs;
 
-	node_t* predecessors = NULL;
-	CheckError(pgm_find_predecessors(cfg.node, &predecessors, &numPredecessors));
-	for (int i = 0; i < numPredecessors; ++i) {
-		std::map<node_t, int, node_compare>::iterator iter;
-		iter = retrieveIndexByNode.find(predecessors[i]);
-		predecessorList[i] = iter->second;
+	// get pointers to the working sets attached to cfg.node
+	{
+		edge_t* edges;
+		int numEdges;
+
+		edges = NULL;
+		numEdges = 0;
+		CheckError(pgm_find_in_edges(cfg.node, &edges, &numEdges));
+		for(int i = 0; i < numEdges; ++i) {
+			auto edgeWithWs = WorkingSet::edgeToWs.find(edges[i]);
+			if(edgeWithWs != WorkingSet::edgeToWs.end()) {
+				WorkingSet* ws = edgeWithWs->second;
+				consumeWs.push_back(ws);
+			}
+		}
+		free(edges);
+		T("%s has %d in-edges with working sets\n", pgm_name(cfg.node), (int)consumeWs.size());
+
+		edges = NULL;
+		numEdges = 0;
+		CheckError(pgm_find_out_edges(cfg.node, &edges, &numEdges));
+		for(int i = 0; i < numEdges; ++i) {
+			auto edgeWithWs = WorkingSet::edgeToWs.find(edges[i]);
+			if(edgeWithWs != WorkingSet::edgeToWs.end()) {
+				WorkingSet* ws = edgeWithWs->second;
+				produceWs.push_back(ws);
+			}
+		}
+		free(edges);
+		T("%s has %d out-edges with working sets\n", pgm_name(cfg.node), (int)produceWs.size());
 	}
-	free(predecessors);
-
 
 #ifdef USE_LITMUS
 	// become a real-time task
@@ -305,8 +341,7 @@ void work_thread(rt_config cfg)
 	if(cfg.cluster >= 0)
 		param.cpu = cluster_to_first_cpu(cfg.cluster, cfg.clusterSize);
 	param.budget_policy = (cfg.budget) ? PRECISE_ENFORCEMENT : NO_ENFORCEMENT;
-	param.release_policy = (numPredecessors == 0) ?
-		TASK_PERIODIC : TASK_EARLY;
+	param.release_policy = (isRoot) ? TASK_PERIODIC : TASK_EARLY;
 
 	ret = set_rt_task_param(gettid(), &param);
 	assert(ret >= 0);
@@ -350,7 +385,7 @@ void work_thread(rt_config cfg)
 			CheckError(ret);
 
 			// do job
-			keepGoing = job(cfg, cfg.idx, count++, predecessorList, numPredecessors, bailoutTime);
+			keepGoing = job(cfg, count++, consumeWs, produceWs, bailoutTime);
 
 			// only allow roots to trigger a graph-wide bailout
 			if(isRoot && !keepGoing) {
@@ -654,7 +689,7 @@ void parse_graph_exec(const std::string& execs, graph_t g, std::map<node_t, doub
 	}
 }
 
-void parse_graph_wss(const std::string& wss, graph_t g, std::map<node_t, double, node_compare>& wss_byte)
+void parse_graph_wss(const std::string& wss, graph_t g, std::map<edge_t, double, edge_compare>& wss_kb)
 {
 	if (wss.empty())
 		return;
@@ -662,15 +697,20 @@ void parse_graph_wss(const std::string& wss, graph_t g, std::map<node_t, double,
 	std::vector<std::string> nodeNames;
 	boost::split(nodeNames, wss, boost::is_any_of(","));
 	for(auto nStr(nodeNames.begin()); nStr != nodeNames.end(); ++nStr) {
-		std::vector<std::string> nodeWssPair;
-		boost::split(nodeWssPair, *nStr, boost::is_any_of(":"));
+		std::vector<std::string> edgeWssDesc;
+		boost::split(edgeWssDesc, *nStr, boost::is_any_of(":"));
 
-		if(nodeWssPair.size() != 2)
+		if(edgeWssDesc.size() != 3)
 			throw std::runtime_error(std::string("Invalid working set size: " + *nStr));
 
-		node_t n;
-		CheckError(pgm_find_node(&n, g, nodeWssPair[0].c_str()));
-		wss_byte[n] = boost::lexical_cast<double>(nodeWssPair[1])*1024;
+		edge_t e;
+		node_t p, c;
+
+		CheckError(pgm_find_node(&p, g, edgeWssDesc[0].c_str()));
+		CheckError(pgm_find_node(&c, g, edgeWssDesc[1].c_str()));
+		CheckError(pgm_find_edge(&e, p, c,
+			make_edge_name(edgeWssDesc[0], edgeWssDesc[1]).c_str()));
+		wss_kb[e] = boost::lexical_cast<double>(edgeWssDesc[2])*1024;
 	}
 }
 
@@ -721,7 +761,7 @@ int main(int argc, char** argv)
 		("execution,x", program_options::value<std::string>(),
 		 	"Execution time requirements for nodes. [<name>:<time>,]+ (time in ms)")
 		("wss,b", program_options::value<std::string>()->default_value(""),
-			"Working set size requirements for nodes. [<name>:<size>,]+ (size in kilobytes)")
+			"Working set size requirements for edges. [<name>:<name>:<size>,]+ (size in kilobytes)")
 		("wsCycle", program_options::value<int>()->default_value(1),
 			"Number of working sets allocated to each node, which are cycled through on produce/consume.")
 		("graphDir,d", program_options::value<std::string>()->default_value("/dev/shm/graphs"),
@@ -761,7 +801,6 @@ int main(int argc, char** argv)
 		.cluster = -1,
 		.clusterSize = vm["clusterSize"].as<int>(),
 		.budget = (vm.count("budget") != 0),
-		.idx = -1,
 		.period_ns = 0,
 		.execution_ns = 0,
 		.duration_ns = (uint64_t)s2ns(vm["duration"].as<double>())
@@ -780,7 +819,7 @@ int main(int argc, char** argv)
 	std::vector<edge_t> edges;
 	std::map<node_t, double, node_compare> periods;
 	std::map<node_t, double, node_compare> executions;
-	std::map<node_t, double, node_compare> wss;
+	std::map<edge_t, double, edge_compare> wss;
 	std::map<node_t, double, node_compare> clusters;
 
 	try {
@@ -820,38 +859,37 @@ int main(int argc, char** argv)
 	init_litmus(); // prepare litmus
 #endif
 
-	init_working_set();
+	// set up working sets for all edges
+	for(auto ws(wss.begin()), theEnd(wss.end()); ws != theEnd; ++ws) {
+		WorkingSet::edgeToWs[ws->first] = new WorkingSet(ws->second, wsCycle);
+	}
+
 	// spawn of a thread for each node in graph
 	std::vector<std::thread> threads;
-	int idxCount = 1; // reserve 0 for main thread
 	for(auto iter(nodes.begin() + 1); iter != nodes.end(); ++iter) {
 		rt_config nodeCfg = cfg;
 		nodeCfg.cluster = clusters[*iter];
 		nodeCfg.node = *iter;
-		nodeCfg.idx = idxCount;
 		nodeCfg.period_ns = ms2ns(periods[*iter]);
 		nodeCfg.execution_ns = ms2ns(executions[*iter]);
-		make_working_set(idxCount++, wss[*iter], wsCycle);
-		retrieveIndexByNode.insert(std::make_pair(*iter, nodeCfg.idx));
 		threads.push_back(std::thread(work_thread, nodeCfg));
 	}
 
 	// main thread handles first node
 	cfg.cluster = clusters[nodes[0]];
 	cfg.node = nodes[0];
-	cfg.idx = 0;
 	cfg.period_ns = ms2ns(periods[nodes[0]]);
 	cfg.execution_ns = ms2ns(executions[nodes[0]]);
-	make_working_set(0, wss[nodes[0]], wsCycle);
-	retrieveIndexByNode.insert(std::make_pair(nodes[0], cfg.idx));
 	work_thread(cfg);
 
 	for(auto t(threads.begin()); t != threads.end(); ++t) {
 		t->join();
 	}
 
-	for(size_t i = 0; i < nodes.size(); ++i) {
-		destroy_working_set(i);
+	for(auto ws(WorkingSet::edgeToWs.begin()), theEnd(WorkingSet::edgeToWs.end());
+		ws != theEnd;
+		++ws) {
+		delete ws->second;
 	}
 
 	CheckError(pgm_destroy_graph(g));

@@ -83,6 +83,7 @@ struct ws_config
 
 	volatile chunk_t* pArr; // volatile to ensure compiler doesn't optimize reads/writes away
 	int num;
+	int cycle;
 };
 
 std::vector<ws_config> wssArray(PGM_MAX_NODES);
@@ -93,7 +94,7 @@ void init_working_set()
 	for(auto iter = wssArray.begin(), theEnd = wssArray.end();
 		iter != theEnd;
 		++iter) {
-		*iter = {NULL, 0};
+		*iter = {NULL, 0, 0};
 	}
 }
 
@@ -103,12 +104,12 @@ void destroy_working_set(int idx)
 		return;
 
 	free((ws_config::chunk_t*)wssArray[idx].pArr);
-	wssArray[idx] = {NULL, 0};
+	wssArray[idx] = {NULL, 0, 0};
 
 	T("free for %d\n", idx);
 }
 
-void make_working_set(int idx, int setSize)
+void make_working_set(int idx, int setSize, int wsCycle)
 {
 	if (wssArray[idx].pArr != NULL)
 		destroy_working_set(idx);
@@ -117,13 +118,13 @@ void make_working_set(int idx, int setSize)
 	ws_config::chunk_t* p = NULL;
 	if (setSize != 0) {
 		nElem = setSize/sizeof(ws_config::chunk_t) + (setSize % sizeof(ws_config::chunk_t) != 0);
-		int nBytes = nElem * sizeof(ws_config::chunk_t); 
+		int nBytes = wsCycle * nElem * sizeof(ws_config::chunk_t);
 		p = (ws_config::chunk_t*)malloc(nBytes);
 
-		T("malloc %d byte for %d\n", nBytes, idx);
+		T("malloc %d bytes (%d per cycle) for %d\n", nBytes, nBytes/wsCycle, idx);
 	}
 
-	wssArray[idx] = {p, nElem};
+	wssArray[idx] = {p, nElem, wsCycle};
 }
 
 uint64_t cputime_ns(void)
@@ -216,27 +217,31 @@ uint64_t loop_for(uint64_t exec_time, uint64_t emergency_exit)
 	return tmp;
 }
 
-ws_config::chunk_t consume(int* pred, int num_pred)
+ws_config::chunk_t consume(int* pred, int num_pred, int job_num)
 {
 	int temp = 0;
 
 	for (int i = 0; i < num_pred; ++i) {
+		int offset = wssArray[pred[i]].num * (job_num % wssArray[pred[i]].cycle);
+		volatile ws_config::chunk_t* ws = wssArray[pred[i]].pArr + offset;
 		for (int j = 0; j < wssArray[pred[i]].num; ++j) {
-			temp += wssArray[pred[i]].pArr[j];
+			temp += ws[j];
 		}
 	}
 
 	return temp;
 }
 
-void produce(int myid, ws_config::chunk_t towrite)
+void produce(int myid, ws_config::chunk_t towrite, int job_num)
 {
+	int offset = wssArray[myid].num * (job_num % wssArray[myid].cycle);
+	volatile ws_config::chunk_t* ws = wssArray[myid].pArr + offset;
 	for (int i = 0; i < wssArray[myid].num; ++i) {
-		wssArray[myid].pArr[i] = towrite;
+		ws[i] = towrite;
 	}
 }
 
-bool job(const rt_config& cfg, int myid, int* pred, int num_pred, uint64_t programEnd)
+bool job(const rt_config& cfg, int myid, int job_num, int* pred, int num_pred, uint64_t programEnd)
 {
 	bool keepGoing = true;
 	if (unlikely(wctime_ns() > programEnd)) {
@@ -248,7 +253,7 @@ bool job(const rt_config& cfg, int myid, int* pred, int num_pred, uint64_t progr
 		uint64_t emergency_exit = programEnd + s2ns(1);
 
 		// consume data from predecessors
-		temp = consume(pred, num_pred);
+		temp = consume(pred, num_pred, job_num);
 
 		// execution time
 		try {
@@ -261,7 +266,7 @@ bool job(const rt_config& cfg, int myid, int* pred, int num_pred, uint64_t progr
 		}
 
 		// produce data for successors
-		produce(myid, temp);
+		produce(myid, temp, job_num);
 	}
 	return keepGoing;
 }
@@ -345,8 +350,7 @@ void work_thread(rt_config cfg)
 			CheckError(ret);
 
 			// do job
-			keepGoing = job(cfg, cfg.idx, predecessorList, numPredecessors, bailoutTime);
-			++count;
+			keepGoing = job(cfg, cfg.idx, count++, predecessorList, numPredecessors, bailoutTime);
 
 			// only allow roots to trigger a graph-wide bailout
 			if(isRoot && !keepGoing) {
@@ -718,6 +722,8 @@ int main(int argc, char** argv)
 		 	"Execution time requirements for nodes. [<name>:<time>,]+ (time in ms)")
 		("wss,b", program_options::value<std::string>()->default_value(""),
 			"Working set size requirements for nodes. [<name>:<size>,]+ (size in kilobytes)")
+		("wsCycle", program_options::value<int>()->default_value(1),
+			"Number of working sets allocated to each node, which are cycled through on produce/consume.")
 		("graphDir,d", program_options::value<std::string>()->default_value("/dev/shm/graphs"),
 			"Directory to hold PGM FIFOs")
 		("duration", program_options::value<double>()->default_value(-1), "Time to run (seconds).")
@@ -760,6 +766,8 @@ int main(int argc, char** argv)
 		.execution_ns = 0,
 		.duration_ns = (uint64_t)s2ns(vm["duration"].as<double>())
 	};
+
+	int wsCycle = vm["wsCycle"].as<int>();
 
 	std::string name = vm["name"].as<std::string>();
 	std::string graphDir = vm["graphDir"].as<std::string>();
@@ -823,7 +831,7 @@ int main(int argc, char** argv)
 		nodeCfg.idx = idxCount;
 		nodeCfg.period_ns = ms2ns(periods[*iter]);
 		nodeCfg.execution_ns = ms2ns(executions[*iter]);
-		make_working_set(idxCount++, wss[*iter]);
+		make_working_set(idxCount++, wss[*iter], wsCycle);
 		retrieveIndexByNode.insert(std::make_pair(*iter, nodeCfg.idx));
 		threads.push_back(std::thread(work_thread, nodeCfg));
 	}
@@ -834,7 +842,7 @@ int main(int argc, char** argv)
 	cfg.idx = 0;
 	cfg.period_ns = ms2ns(periods[nodes[0]]);
 	cfg.execution_ns = ms2ns(executions[nodes[0]]);
-	make_working_set(0, wss[nodes[0]]);
+	make_working_set(0, wss[nodes[0]], wsCycle);
 	retrieveIndexByNode.insert(std::make_pair(nodes[0], cfg.idx));
 	work_thread(cfg);
 

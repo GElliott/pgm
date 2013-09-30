@@ -23,10 +23,10 @@ using namespace boost::filesystem;
 struct pgm_edge
 {
 	char name[PGM_EDGE_NAME_LEN];
-	
+
 	int producer;
 	int consumer;
-	
+
 	int nr_produce;
 	int nr_consume;
 	int nr_threshold;
@@ -34,37 +34,38 @@ struct pgm_edge
 	// fd_in and fd_out may be the same
 	// if different ends of the FIFO are
 	// open by different processes.
-	
+
 	int fd_in;
 	int fd_out;
-	
+
 	/* Future: Add stats on thresholds, etc. */
 }__attribute__((packed));
 
 struct pgm_node
 {
 	char name[PGM_NODE_NAME_LEN];
-	
+
+	/* in/out hold indices to edges */
 	int in[PGM_MAX_IN_DEGREE];
 	int out[PGM_MAX_OUT_DEGREE];
-	
+
 	int nr_in;
 	int nr_out;
-	
+
 	pid_t owner;
-	
+
 }__attribute__((packed));
 
 struct pgm_graph
 {
 	int in_use;
 	char name[PGM_GRAPH_NAME_LEN];
-	
+
 	pthread_mutex_t lock;
-	
+
 	int nr_nodes;
 	struct pgm_node nodes[PGM_MAX_NODES];
-	
+
 	int nr_edges;
 	struct pgm_edge edges[PGM_MAX_EDGES];
 }__attribute__((packed));
@@ -78,13 +79,13 @@ static struct pgm_graph* graphs;
 static path graphPath;
 
 static int safePath(const path& dir)
-{		
+{
 	static const path allowed[] = {
 		path("/dev/shm"),
 		path("/home"),
 		path("/tmp")
 	};
-	
+
 	path dirAbs;
 	if(dir.is_relative())
 	{
@@ -114,7 +115,7 @@ static int safePath(const path& dir)
 			}
 		}
 	}
-	
+
 	if(nrValidStems == failures)
 		return -1;
 	return 0;
@@ -123,25 +124,25 @@ static int safePath(const path& dir)
 static int prepare_dir(const path& graphDir)
 {
 	int ret = -1;
-	
+
 	if(0 != safePath(graphDir))
 	{
 		fprintf(stderr, "PGM failure: %s is an invalid path.\n", graphDir.string().c_str());
 		goto out;
 	}
-	
+
 	if(exists(graphDir) && !is_directory(graphDir))
 	{
 		fprintf(stderr, "PGM failure: %s is a file.\n", graphDir.string().c_str());
 		goto out;
 	}
-	
+
 	if(boost::filesystem::equivalent(graphDir, current_path()))
 	{
 		fprintf(stderr, "PGM failure: current working directory cannot be the same as graph directory.\n");
 		goto out;
 	}
-	
+
 	if(!exists(graphDir))
 	{
 	create_dir:
@@ -152,7 +153,7 @@ static int prepare_dir(const path& graphDir)
 			goto out;
 		}
 	}
-	
+
 	if(!filesystem::is_empty(graphDir))
 	{
 		if(0 == remove_all(graphDir))
@@ -163,9 +164,9 @@ static int prepare_dir(const path& graphDir)
 		}
 		goto create_dir; // i know. this makes a child cry somewhere in the world.
 	}
-	
+
 	ret = 0;
-	
+
 out:
 	return ret;
 }
@@ -176,10 +177,10 @@ static string get_mem_name(const path& graphDir)
 	boost::hash<std::string> string_hash;
 	stringstream ss;
 	size_t hash;
-	
+
 	hash = string_hash(graphDir.string());
 	ss<<hex<<hash<<"_"<<graphName;
-	
+
 	return ss.str();
 }
 
@@ -187,13 +188,13 @@ static int prepare_graph_mem(const path& graphDir)
 {
 	int ret = -1;
 	string memName = get_mem_name(graphDir);
-	
+
 	// allocate twice as much space as we really need, just to be safe.
 	size_t memsize = sizeof(struct pgm_graph) * PGM_MAX_GRAPHS * 2;
-	
+
 	// make sure there's nothing hanging around
 	shared_memory_object::remove(memName.c_str());
-	
+
 	graphMem = new managed_shared_memory(create_only, memName.c_str(), memsize);
 	if(!graphMem)
 	{
@@ -201,7 +202,7 @@ static int prepare_graph_mem(const path& graphDir)
 				memName.c_str());
 		goto out;
 	}
-	
+
 	graphs = graphMem->construct<struct pgm_graph>("struct pgm_graph graphs")[PGM_MAX_GRAPHS]();
 	if(!graphs)
 	{
@@ -209,11 +210,11 @@ static int prepare_graph_mem(const path& graphDir)
 		goto out;
 	}
 	memset(graphs, 0, sizeof(struct pgm_graph)*PGM_MAX_GRAPHS);
-	
+
 	ret = 0;
 	is_graph_master = true;
 	mem_name = memName;
-	
+
 out:
 	return ret;
 }
@@ -225,7 +226,7 @@ static int open_graph_mem(const path& graphDir, const int timeout_s = 60)
 	int ret = -1;
 	int time = 0;
 	string memName = get_mem_name(graphDir);
-	
+
 	do {
 		try
 		{
@@ -235,7 +236,7 @@ static int open_graph_mem(const path& graphDir, const int timeout_s = 60)
 		catch (...)
 		{
 			sleep(1);
-			
+
 			if(timeout_s == ++time)
 				goto out;
 		}
@@ -243,7 +244,7 @@ static int open_graph_mem(const path& graphDir, const int timeout_s = 60)
 
 	graphs = graphMem->find<struct pgm_graph>("struct pgm_graph graphs").first;
 	ret = 0;
-	
+
 out:
 	return ret;
 }
@@ -253,19 +254,19 @@ int pgm_init(const char* dir, int create)
 {
 	int ret = -1;
 	path graphDir(dir);
-	
+
 	if(graphDir.is_relative())
 	{
 		graphDir = current_path();
 		graphDir /= dir;
 	}
-	
+
 	if(create)
 	{
 		ret = prepare_dir(graphDir);
 		if(0 != ret)
 			goto out;
-		
+
 		ret = prepare_graph_mem(graphDir);
 		if(0 != ret)
 			goto out;
@@ -278,7 +279,7 @@ int pgm_init(const char* dir, int create)
 	}
 
 	graphPath = graphDir;
-	
+
 out:
 	return ret;
 }
@@ -287,14 +288,14 @@ int pgm_destroy(void)
 {
 	if(!graphMem)
 		return -1;
-	
+
 	graphs = 0;
 	delete graphMem;
 	graphMem = 0;
-	
+
 	if(is_graph_master)
 		shared_memory_object::remove(mem_name.c_str());
-	
+
 	return 0;
 }
 
@@ -304,7 +305,7 @@ static int prepare_graph(graph_t* graph, const char* graph_name)
 	int ret = -1;
 	struct pgm_graph *g;
 	size_t len;
-	
+
 	*graph = -1;
 	for(int i = 0; i < PGM_MAX_GRAPHS; ++i)
 	{
@@ -314,17 +315,17 @@ static int prepare_graph(graph_t* graph, const char* graph_name)
 			break;
 		}
 	}
-	
+
 	if(*graph == -1)
 	{
 		fprintf(stderr, "PGM failure: out of graph slots\n");
 		goto out;
 	}
-	
+
 	g = &graphs[*graph];
 	memset(g, 0, sizeof(struct pgm_graph));
 	g->in_use = 1;
-	
+
 	len = strnlen(graph_name, PGM_GRAPH_NAME_LEN);
 	if(len <= 0 || len > PGM_GRAPH_NAME_LEN)
 	{
@@ -333,13 +334,13 @@ static int prepare_graph(graph_t* graph, const char* graph_name)
 	}
 
 	strncpy(g->name, graph_name, PGM_GRAPH_NAME_LEN);
-	
+
 	pthread_mutexattr_t attr;
 	pthread_mutexattr_init(&attr);
 	pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
 	pthread_mutex_init(&g->lock, &attr);
 	pthread_mutexattr_destroy(&attr);
-	
+
 	ret = 0;
 
 out:
@@ -349,7 +350,7 @@ out:
 static int open_graph(graph_t* graph, const char* graph_name)
 {
 	size_t len = strlen(graph_name);
-	
+
 	*graph = -1;
 	for(int i = 0; i < PGM_MAX_GRAPHS; ++i)
 	{
@@ -359,10 +360,10 @@ static int open_graph(graph_t* graph, const char* graph_name)
 			break;
 		}
 	}
-	
+
 //	if(0 != *graph)
 //		fprintf(stderr, "PGM failure: could not find graph %s.\n", graph_name);
-	
+
 	return (*graph == -1) ? -1: 0;
 }
 
@@ -370,16 +371,16 @@ int pgm_find_graph(graph_t* graph, const char* graph_name)
 {
 	int ret = -1;
 	size_t len;
-	
+
 	if(!graphMem)
 		goto out;
-	
+
 	len = strnlen(graph_name, PGM_GRAPH_NAME_LEN);
 	if(len <= 0 || len > PGM_GRAPH_NAME_LEN)
 		goto out;
 
 	ret = open_graph(graph, graph_name);
-	
+
 out:
 	return ret;
 }
@@ -388,14 +389,14 @@ int pgm_init_graph(graph_t* graph, const char* graph_name)
 {
 	int ret = -1;
 	size_t len;
-	
+
 	if(!graphMem)
 		goto out;
-	
+
 	len = strnlen(graph_name, PGM_GRAPH_NAME_LEN);
 	if(len <= 0 || len > PGM_GRAPH_NAME_LEN)
 		goto out;
-	
+
 	if(is_graph_master && 0 != pgm_find_graph(graph, graph_name))
 		ret = prepare_graph(graph, graph_name);
 out:
@@ -425,10 +426,10 @@ static int create_fifo(pgm_graph* g, pgm_node* producer, pgm_node* consumer, pgm
 {
 	int ret = -1;
 	string fifoName(fifo_name(g, producer, consumer, edge));
-	
+
 	path fifoPath(graphPath);
 	fifoPath /= fifoName;
-	
+
 	// TODO: See what boost can do here.
 	ret = mkfifo(fifoPath.string().c_str(), S_IRUSR | S_IWUSR);
 	if(0 != ret)
@@ -443,17 +444,17 @@ static int destroy_fifo(pgm_graph* g, pgm_node* producer, pgm_node* consumer, pg
 {
 	int ret = -1;
 	string fifoName(fifo_name(g, producer, consumer, edge));
-	
+
 	path fifoPath(graphPath);
 	fifoPath /= fifoName;
-	
+
 	if(!exists(fifoPath))
 		goto out;
 	if(!remove(fifoPath))
 		goto out;
-		
+
 	ret = 0;
-	
+
 out:
 	return ret;
 }
@@ -467,7 +468,7 @@ static void __destroy_graph(struct pgm_graph* g)
 					 &(g->nodes[g->edges[i].consumer]),
 					 &(g->edges[i]));
 	}
-	
+
 	g->in_use = 0;
 	g->nr_nodes = 0;
 	memset(g->name, 0, sizeof(g->name));
@@ -479,17 +480,17 @@ int pgm_destroy_graph(graph_t graph)
 	int ret = -1;
 	int abort = 0;
 	struct pgm_graph* g;
-	
+
 	if(!graphMem)
 		goto out;
 	if(!is_graph_master)
 		goto out;
 	if(!is_valid_graph(graph))
 		goto out;
-	
+
 	g = &graphs[graph];
-	
-	
+
+
 	pthread_mutex_lock(&g->lock);
 	for(int i = 0; i < g->nr_nodes; ++i)
 	{
@@ -501,7 +502,7 @@ int pgm_destroy_graph(graph_t graph)
 			goto out_unlock;
 		}
 	}
-	
+
 out_unlock:
 	if(!abort)
 	{
@@ -533,17 +534,17 @@ int pgm_init_node(node_t* node, graph_t graph, const char* name)
 	len = strnlen(name, PGM_NODE_NAME_LEN);
 	if(len <= 0 || len > PGM_NODE_NAME_LEN)
 		goto out;
-	
+
 	g = &graphs[graph];
 	pthread_mutex_lock(&g->lock);
-	
+
 	if(g->nr_nodes + 1 == PGM_MAX_NODES)
 	{
 		fprintf(stderr, "PGM failure: no more available nodes for graph %s.\n",
 				g->name);
 		goto out_unlock;
 	}
-	
+
 	node->graph = graph;
 	node->node = (g->nr_nodes)++;
 	n = &g->nodes[node->node];
@@ -552,7 +553,7 @@ int pgm_init_node(node_t* node, graph_t graph, const char* name)
 	memset(n, 0, sizeof(*n));
 	strncpy(n->name, name, len);
 	ret = 0;
-	
+
 out_unlock:
 	pthread_mutex_unlock(&g->lock);
 out:
@@ -564,13 +565,13 @@ int pgm_find_node(node_t* node, graph_t graph, const char* name)
 	int ret = -1;
 	size_t len;
 	struct pgm_graph* g;
-	
+
 	if(!node || !is_valid_graph(graph))
 		goto out;
 	len = strnlen(name, PGM_NODE_NAME_LEN);
 	if(len <= 0 || len > PGM_NODE_NAME_LEN)
 		goto out;
-	
+
 	g = &graphs[graph];
 
 	pthread_mutex_lock(&g->lock);
@@ -599,7 +600,7 @@ int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer, const char* na
 	struct pgm_node* np;
 	struct pgm_node* nc;
 	size_t len;
-	
+
 	if(!edge || (producer.graph != consumer.graph) || !is_valid_graph(producer.graph))
 		goto out;
 	if(!is_graph_master)
@@ -615,7 +616,7 @@ int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer, const char* na
 
 	g = &graphs[producer.graph];
 	pthread_mutex_lock(&g->lock);
-	
+
 	if(g->nr_edges + 1 == PGM_MAX_EDGES)
 	{
 		fprintf(stderr, "PGM failure: no more available edges for graph %s.\n",
@@ -627,18 +628,18 @@ int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer, const char* na
 		fprintf(stderr, "PGM failure: invalid nodes.\n");
 		goto out_unlock;
 	}
-	
+
 	edge->graph = producer.graph;
 	edge->edge = (g->nr_edges)++;
 	e = &g->edges[edge->edge];
-	
+
 	np = &g->nodes[producer.node];
 	if(np->nr_out+1 == PGM_MAX_OUT_DEGREE)
 		goto out_unlock;
 	nc = &g->nodes[consumer.node];
 	if(nc->nr_in+1 == PGM_MAX_IN_DEGREE)
 		goto out_unlock;
-	
+
 	np->out[np->nr_out++] = edge->edge;
 	nc->in[nc->nr_in++] = edge->edge;
 
@@ -652,7 +653,7 @@ int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer, const char* na
 	e->nr_threshold = threshold;
 
 	ret = create_fifo(g, np, nc, e);
-	
+
 out_unlock:
 	pthread_mutex_unlock(&g->lock);
 out:
@@ -664,24 +665,29 @@ int pgm_find_edge(edge_t* edge, node_t producer, node_t consumer, const char* na
 	int ret = -1;
 	struct pgm_graph* g;
 	size_t len;
-	
+
+	if(!name)
+		return pgm_find_first_edge(edge, producer, consumer);
+
 	if(!edge || (producer.graph != consumer.graph) || !is_valid_graph(producer.graph))
 		goto out;
 	len = strnlen(name, PGM_EDGE_NAME_LEN);
 	if(len <= 0 || len > PGM_EDGE_NAME_LEN)
 		goto out;
-	
+
 	g = &graphs[producer.graph];
-	
+
 	pthread_mutex_lock(&g->lock);
 	for(int i = 0; i < g->nr_edges; ++i)
 	{
-		if(0 == strncmp(g->edges[i].name, name, len))
+		if(g->edges[i].producer == producer.node &&
+		   g->edges[i].consumer == consumer.node &&
+		   (0 == strncmp(g->edges[i].name, name, len)))
 		{
 			int found = 0;
 			pgm_node *np = &g->nodes[producer.node];
 			pgm_node *nc = &g->nodes[consumer.node];
-		
+
 			for(int j = 0; j < np->nr_out; ++j)
 			{
 				if(i == np->out[j])
@@ -698,19 +704,47 @@ int pgm_find_edge(edge_t* edge, node_t producer, node_t consumer, const char* na
 					break;
 				}
 			}
-			
+
 			if(found != 2)
 				goto out_unlock;
-			
+
 			edge->graph = producer.graph;
 			edge->edge = i;
 			ret = 0;
 			break;
 		}
 	}
-	
+
 out_unlock:
 	pthread_mutex_unlock(&g->lock);
+out:
+	return ret;
+}
+
+int pgm_find_first_edge(edge_t* edge, node_t producer, node_t consumer)
+{
+	int ret = -1;
+	struct pgm_graph* g;
+
+	if(!edge || (producer.graph != consumer.graph) || !is_valid_graph(producer.graph))
+		goto out;
+
+	g = &graphs[producer.graph];
+
+	pthread_mutex_lock(&g->lock);
+	for(int i = 0; i < g->nr_edges; ++i)
+	{
+		if(g->edges[i].producer == producer.node &&
+		   g->edges[i].consumer == consumer.node)
+		{
+			edge->graph = producer.graph;
+			edge->edge = i;
+			ret = 0;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&g->lock);
+
 out:
 	return ret;
 }
@@ -790,7 +824,10 @@ int pgm_degree(node_t node)
 
 	g = &graphs[node.graph];
 	n = &g->nodes[node.node];
+
+	pthread_mutex_lock(&g->lock);
 	ret = n->nr_in + n->nr_out;
+	pthread_mutex_unlock(&g->lock);
 
 out:
 	return ret;
@@ -807,7 +844,9 @@ int pgm_degree_in(node_t node)
 
 	g = &graphs[node.graph];
 	n = &g->nodes[node.node];
+	__sync_synchronize();
 	ret = n->nr_in;
+	__sync_synchronize();
 
 out:
 	return ret;
@@ -824,7 +863,9 @@ int pgm_degree_out(node_t node)
 
 	g = &graphs[node.graph];
 	n = &g->nodes[node.node];
+	__sync_synchronize();
 	ret = n->nr_out;
+	__sync_synchronize();
 
 out:
 	return ret;
@@ -836,18 +877,20 @@ int pgm_find_successors(node_t node, node_t** successors, int* num)
 	struct pgm_graph* g;
 	struct pgm_node* n;
 
-	if(!is_valid_graph(node.graph))
+	if(!successors || !is_valid_graph(node.graph))
 		goto out;
 
 	ret = 0;
 	g = &graphs[node.graph];
 	n = &g->nodes[node.node];
 
+
+	pthread_mutex_lock(&g->lock);
 	*num = n->nr_out;
 	if(*num == 0)
 	{
 		*successors = NULL;
-		goto out;
+		goto out_unlock;
 	}
 
 	*successors = (node_t*)malloc((*num) * sizeof(node_t));
@@ -861,7 +904,46 @@ int pgm_find_successors(node_t node, node_t** successors, int* num)
 		};
 		(*successors)[i] = succ;
 	}
+out_unlock:
+	pthread_mutex_unlock(&g->lock);
+out:
+	return ret;
+}
 
+int pgm_find_out_edges(node_t node, edge_t** edges, int* num)
+{
+	int ret = -1;
+	struct pgm_graph* g;
+	struct pgm_node* n;
+
+	if(!edges || !is_valid_graph(node.graph))
+		goto out;
+
+	ret = 0;
+	g = &graphs[node.graph];
+	n = &g->nodes[node.node];
+
+
+	pthread_mutex_lock(&g->lock);
+	*num = n->nr_out;
+	if(*num == 0)
+	{
+		*edges = NULL;
+		goto out_unlock;
+	}
+
+	*edges = (edge_t*)malloc((*num) * sizeof(edge_t));
+	for(int i = 0; i < *num; ++i)
+	{
+		edge_t e =
+		{
+			.graph = node.graph,
+			.edge = n->out[i]
+		};
+		(*edges)[i] = e;
+	}
+out_unlock:
+	pthread_mutex_unlock(&g->lock);
 out:
 	return ret;
 }
@@ -872,18 +954,20 @@ int pgm_find_predecessors(node_t node, node_t** predecessors, int* num)
 	struct pgm_graph* g;
 	struct pgm_node* n;
 
-	if(!is_valid_graph(node.graph))
+	if(!predecessors || !is_valid_graph(node.graph))
 		goto out;
 
 	ret = 0;
 	g = &graphs[node.graph];
 	n = &g->nodes[node.node];
 
+
+	pthread_mutex_lock(&g->lock);
 	*num = n->nr_in;
 	if(*num == 0)
 	{
 		*predecessors = NULL;
-		goto out;
+		goto out_unlock;
 	}
 
 	*predecessors = (node_t*)malloc((*num) * sizeof(node_t));
@@ -897,7 +981,46 @@ int pgm_find_predecessors(node_t node, node_t** predecessors, int* num)
 		};
 		(*predecessors)[i] = pred;
 	}
+out_unlock:
+	pthread_mutex_unlock(&g->lock);
+out:
+	return ret;
+}
 
+int pgm_find_in_edges(node_t node, edge_t** edges, int* num)
+{
+	int ret = -1;
+	struct pgm_graph* g;
+	struct pgm_node* n;
+
+	if(!edges || !is_valid_graph(node.graph))
+		goto out;
+
+	ret = 0;
+	g = &graphs[node.graph];
+	n = &g->nodes[node.node];
+
+
+	pthread_mutex_lock(&g->lock);
+	*num = n->nr_in;
+	if(*num == 0)
+	{
+		*edges = NULL;
+		goto out_unlock;
+	}
+
+	*edges = (edge_t*)malloc((*num) * sizeof(edge_t));
+	for(int i = 0; i < *num; ++i)
+	{
+		edge_t e =
+		{
+			.graph = node.graph,
+			.edge = n->in[i]
+		};
+		(*edges)[i] = e;
+	}
+out_unlock:
+	pthread_mutex_unlock(&g->lock);
 out:
 	return ret;
 }
@@ -970,12 +1093,12 @@ int pgm_claim_node(node_t node, pid_t tid)
 	int ret = -1;
 	struct pgm_graph* g;
 	struct pgm_node* n;
-	
+
 	if(!is_valid_graph(node.graph))
 		goto out;
-	
+
 	g = &graphs[node.graph];
-	
+
 	pthread_mutex_lock(&g->lock);
 	{
 		if(node.node < 0 || node.node >= g->nr_nodes)
@@ -983,22 +1106,22 @@ int pgm_claim_node(node_t node, pid_t tid)
 			pthread_mutex_unlock(&g->lock);
 			goto out;
 		}
-		
+
 		n = &g->nodes[node.node];
 		n->owner = tid;
 	}
 	pthread_mutex_unlock(&g->lock);
-	
+
 	// open connections to the FIFOs.
 	//   in-edges first
 	for(int i = 0; i < n->nr_in; ++i)
 	{
 		struct pgm_edge* e = &g->edges[n->in[i]];
 		struct pgm_node* p = &g->nodes[e->producer];
-		
+
 		path fifoPath(graphPath);
 		fifoPath /= fifo_name(g, p, n, e);
-		
+
 		e->fd_in = open(fifoPath.string().c_str(), O_RDONLY | O_NONBLOCK);
 		if(e->fd_in == -1)
 		{
@@ -1012,10 +1135,10 @@ int pgm_claim_node(node_t node, pid_t tid)
 	{
 		struct pgm_edge* e = &g->edges[n->out[i]];
 		struct pgm_node* c = &g->nodes[e->consumer];
-		
+
 		path fifoPath(graphPath);
 		fifoPath /= fifo_name(g, n, c, e);
-		
+
 		e->fd_out = open(fifoPath.string().c_str(), O_WRONLY);
 		if(e->fd_out == -1)
 		{
@@ -1024,9 +1147,9 @@ int pgm_claim_node(node_t node, pid_t tid)
 			assert(false);
 		}
 	}
-	
+
 	ret = 0;
-	
+
 out:
 	return ret;
 }
@@ -1036,18 +1159,18 @@ int pgm_release_node(node_t node, pid_t tid)
 	int ret = -1;
 	struct pgm_graph* g;
 	struct pgm_node* n;
-	
+
 	if(!is_valid_graph(node.graph))
 		goto out;
-	
+
 	g = &graphs[node.graph];
 	n = &g->nodes[node.node];
-	
+
 	pthread_mutex_lock(&g->lock);
 
 	if(node.node < 0 || node.node >= g->nr_nodes || n->owner != tid)
 		goto out_unlock;
-	
+
 	// close connections to the FIFOs.
 	//   out-edges first
 	for(int i = 0; i < n->nr_out; ++i)
@@ -1073,14 +1196,14 @@ int pgm_release_node(node_t node, pid_t tid)
 		}
 		e->fd_in = 0;
 	}
-	
+
 	n->owner = 0;
-	
+
 	ret = 0;
-	
+
 out_unlock:
 	pthread_mutex_unlock(&g->lock);
-	
+
 out:
 	return ret;
 }
@@ -1106,9 +1229,9 @@ static const size_t MAX_CONSUME = MAX_PRODUCE;
 static int pgm_send(struct pgm_graph* g, struct pgm_node* n, token_t msg)
 {
 	int ret = 0;
-	
+
 //	fprintf(stdout, "- %s has %d out edges.\n", n->name, n->nr_out);
-	
+
 	for(int i = 0; i < n->nr_out; ++i)
 	{
 		struct pgm_edge* e = &g->edges[n->out[i]];
@@ -1123,11 +1246,11 @@ static int pgm_send(struct pgm_graph* g, struct pgm_node* n, token_t msg)
 		{
 			bytes = write(e->fd_out, (void*)&msg, sizeof(msg));
 		}
-		
+
 		if(bytes != sizeof(msg))
 		{
 			ret = -1;
-			
+
 			if(bytes == -1)
 				fprintf(stderr, "PGM failure: failed to write msg to "
 						"edge %s/%s from node %s/%s. Error %d: %s\n",
@@ -1165,12 +1288,12 @@ static eWaitStatus pgm_wait_for_edges(pgm_fd_mask_t* to_wait, struct pgm_graph* 
 	fd_set set;
 	pgm_fd_mask_t b;
 	int sum, i, scanned;
-	
+
 	while(*to_wait)
 	{
 		FD_ZERO(&set);
 		sum = 0;
-		
+
 		// build the set
 		for(i = 0, b = 1; i < n->nr_in; ++i, b <<= 1)
 		{
@@ -1180,13 +1303,13 @@ static eWaitStatus pgm_wait_for_edges(pgm_fd_mask_t* to_wait, struct pgm_graph* 
 				sum += g->edges[n->in[i]].fd_in;
 			}
 		}
-		
+
 		int nr_ready = select(sum + 1, &set, NULL, NULL, NULL);
 		if(nr_ready == 0)
 			return WaitTimeout;
 		if(nr_ready == -1)
 			return WaitError;
-		
+
 		scanned = 0;
 		for(i = 0, b = 1; i < n->nr_in && scanned < nr_ready; ++i, b <<= 1)
 		{
@@ -1197,7 +1320,7 @@ static eWaitStatus pgm_wait_for_edges(pgm_fd_mask_t* to_wait, struct pgm_graph* 
 			}
 		}
 	}
-	
+
 	return WaitSuccess;
 }
 
@@ -1210,10 +1333,10 @@ static int pgm_recv(struct pgm_graph* g, struct pgm_node* n)
 {
 	int ret = -1;
 	__attribute__((aligned(16))) token_t v[MAX_CONSUME];
-	
+
 	// brainfart. easier way?
 	pgm_fd_mask_t to_wait = ~((pgm_fd_mask_t)0) >> (sizeof(to_wait)*8 - n->nr_in);
-	
+
 retry:
 	while(to_wait)
 	{
@@ -1230,7 +1353,7 @@ retry:
 				assert(!to_wait);  // unkown error...
 		}
 	}
-	
+
 	// all edges are ready for reading
 	for(int i = 0; i < n->nr_in; ++i)
 	{
@@ -1284,9 +1407,9 @@ retry:
 			goto out;
 		}
 	}
-	
+
 	ret = 0;
-	
+
 out:
 	return ret;
 }
@@ -1296,18 +1419,18 @@ int pgm_wait(node_t node)
 	int ret = -1;
 	struct pgm_graph* g = &graphs[node.graph];
 	struct pgm_node* n = &g->nodes[node.node];
-	
+
 	// no locking or error checking for the sake of speed.
 	// we assume initialization is done. use higher-level constructs, such
 	// as barriers, to ensure clean bring-up and shutdown.
-	
+
 	ret = pgm_recv(g, n);
-		
+
 	if(ret == TERMINATE)
 	{
 		pgm_terminate(node);
 	}
-	
+
 	return ret;
 }
 
@@ -1322,7 +1445,7 @@ int pgm_complete(node_t node)
 	// as barriers, to ensure clean bring-up and shutdown.
 
 	ret = pgm_send(g, n, TOKEN);
-	
+
 	return ret;
 }
 
@@ -1331,13 +1454,13 @@ int pgm_terminate(node_t node)
 	int ret = -1;
 	struct pgm_graph* g = &graphs[node.graph];
 	struct pgm_node* n = &g->nodes[node.node];
-	
+
 	// no locking or error checking for the sake of speed.
 	// we assume initialization is done. use higher-level constructs, such
 	// as barriers, to ensure clean bring-up and shutdown.
-	
+
 	ret = pgm_send(g, n, TERMINATE);
-	
+
 	return ret;
 }
 

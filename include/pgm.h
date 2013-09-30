@@ -47,6 +47,9 @@ int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer, const char* na
 					int produce = 1, int consume = 1, int threshold = 1);
 int pgm_find_edge(edge_t* edge, node_t producer, node_t consumer, const char* name);
 
+/* returns the first edge between producer and consumer. */
+int pgm_find_first_edge(edge_t* edge, node_t producer, node_t consumer);
+
 int pgm_claim_node(node_t node, pid_t tid = 0);
 int pgm_release_node(node_t node, pid_t tid = 0);
 
@@ -65,11 +68,13 @@ int pgm_nr_threshold(edge_t edge);
 
 /* returns buffer list of nodes. caller must free() buffer */
 int pgm_find_successors(node_t n, node_t** successors, int* num);
+int pgm_find_out_edges(node_t n, edge_t** edges, int* num);
 int pgm_find_predecessors(node_t, node_t** predecessors, int* num);
+int pgm_find_in_edges(node_t n, edge_t** edges, int* num);
 
 int pgm_is_dag(graph_t graph);
 
-// convienience functions to allow number-based names instead of string-based names.
+/* convienience functions to allow number-based names instead of string-based names. */
 
 static int pgm_init_graph(graph_t* graph, unsigned int numerical_name)
 {

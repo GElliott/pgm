@@ -34,12 +34,20 @@ do { \
 // macro to boost priority of tasks waiting for tokens
 // when compiled for Litmus.
 #ifdef USE_LITMUS
-#define boosted_pgm_wait(statements) \
-enter_pgm_wait(); \
-statements \
-exit_pgm_wait();
+// waiting task's priority is boosted as needed
+#define litmus_pgm_wait(statements) \
+	enter_pgm_wait(); \
+	statements \
+	exit_pgm_wait();
+// signalling task's priority is unconditionally boosted,
+// so just enter a non-preemptive section.
+#define litmus_pgm_complete(statements) \
+	enter_pgm_send(); \
+	statements \
+	exit_pgm_send();
 #else
-#define boosted_pgm_wait(statements) statements
+#define litmus_pgm_wait(statements) statements
+#define litmus_pgm_complete(statements) statements
 #endif
 
 // trace macro for VERBOSE
@@ -372,7 +380,7 @@ void work_thread(rt_config cfg)
 		// select()).
 		if(!isRoot) {
 			T("(x) %s waits for tokens\n", pgm_name(cfg.node));
-			boosted_pgm_wait(ret = pgm_wait(cfg.node););
+			litmus_pgm_wait(ret = pgm_wait(cfg.node););
 		}
 
 #ifndef USE_LITMUS
@@ -395,7 +403,7 @@ void work_thread(rt_config cfg)
 			else {
 				T("(+) %s fired for %d time\n", pgm_name(cfg.node), count);
 
-				CheckError(pgm_complete(cfg.node));
+				litmus_pgm_complete(CheckError(pgm_complete(cfg.node)););
 
 #ifdef USE_LITMUS
 				sleep_next_period();

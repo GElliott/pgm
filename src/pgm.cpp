@@ -15,12 +15,24 @@
 #include <boost/filesystem.hpp>
 #include <boost/functional/hash.hpp>
 
+#ifdef PGM_USE_PTHREAD_SYNC
+typedef pthread_mutex_t pgm_lock_t;
+typedef pthread_cond_t  pgm_cv_t;
+#else
+#include "ticketlock.h"
+#include "condvar.h"
+typedef ticketlock_t    pgm_lock_t;
+typedef cv_t            pgm_cv_t;
+#endif
+
 using namespace std;
 using namespace boost;
 using namespace boost::interprocess;
 using namespace boost::filesystem;
 
-
+#ifndef PGM_CONFIG
+#error "pgm/include/config.h not included!"
+#endif
 
 ///////////////////////////////////////////////////
 //         Internal PGM Data Structures          //
@@ -37,7 +49,7 @@ struct pgm_edge
 	int nr_consume;
 	int nr_threshold;
 
-#ifdef USE_FIFOS
+#ifdef PGM_USE_FIFOS
 	// fd_in and fd_out may be the same
 	// if different ends of the FIFO are
 	// open by different processes.
@@ -45,7 +57,7 @@ struct pgm_edge
 	int fd_out;
 #endif
 
-#ifdef USE_OPTIMIZED_MSG_PASSING
+#ifdef PGM_USE_OPTIMIZED_MSG_PASSING
 	int nr_pending;
 #endif
 
@@ -63,11 +75,11 @@ struct pgm_node
 	int nr_in;
 	int nr_out;
 
-#ifdef USE_OPTIMIZED_MSG_PASSING
-	pthread_mutex_t lock;
-	pthread_cond_t  wait;
+#ifdef PGM_USE_OPTIMIZED_MSG_PASSING
+	pgm_lock_t lock;
+	pgm_cv_t   wait;
 
-#ifndef USE_FIFOS
+#ifndef PGM_USE_FIFOS
 	int should_terminate;
 #endif
 #endif
@@ -91,6 +103,68 @@ struct pgm_graph
 }__attribute__((packed));
 
 
+///////////////////////////////////////////////////
+//           SYNC PRIMATIVE WRAPPERS             //
+///////////////////////////////////////////////////
+#ifdef PGM_USE_PTHREAD_SYNC
+/* lock wrapper */
+static void pgm_lock_init(pgm_lock_t* l)
+{
+	pthread_mutexattr_t attr;
+	pthread_mutexattr_init(&attr);
+#ifndef PGM_PRIVATE
+	pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+#endif
+	pthread_mutex_init(l, &attr);
+	pthread_mutexattr_destroy(&attr);
+}
+#define pgm_lock_destroy(l)  pthread_mutex_destroy((l))
+#define pgm_lock(l)   pthread_mutex_lock((l))
+#define pgm_unlock(l) pthread_mutex_unlock((l))
+/* condition variable wrapper */
+static void pgm_cv_init(pgm_cv_t* cv)
+{
+	pthread_condattr_t cattr;
+	pthread_condattr_init(&cattr);
+#ifndef PGM_PRIVATE
+	pthread_condattr_setpshared(&cattr, 1);
+#endif
+	pthread_cond_init(cv, &cattr);
+	pthread_condattr_destroy(&cattr);
+}
+#define pgm_cv_destroy(cv)   pthread_cond_destroy((cv))
+#define pgm_cv_wait(cv, l)   pthread_cond_wait((cv), (l))
+#define pgm_cv_signal(cv)    pthread_cond_signal((cv))
+
+#else // end PGM_USE_PTHREAD_SYNC
+/* lock wrapper */
+#ifndef PGM_INTERRUPT_DISABLING_LOCKS
+#define pgm_lock_init(l)    tl_init((l))
+#else
+#define pgm_lock_init(l)    tl_init_w_irqcap((l))
+#endif
+#define pgm_lock_destroy(l) (void)(l)
+#ifndef PGM_INTERRUPT_DISABLING_LOCKS
+#define pgm_lock(l)         tl_lock((l))
+#define pgm_unlock(l)       tl_unlock((l))
+#else
+#define pgm_lock(l)         tl_lock_irqdisable((l))
+#define pgm_unlock(l)       tl_unlock_irqenable((l))
+#endif
+/* condition variable wrapper */
+#ifdef PGM_PRIVATE
+#define pgm_cv_init(cv)     cv_init((cv))
+#else
+#define pgm_cv_init(cv)     cv_init_shared((cv))
+#endif
+#define pgm_cv_destroy(cv)  (void)(cv)
+#ifndef PGM_INTERRUPT_DISABLING_LOCKS
+#define pgm_cv_wait(cv, l)  cv_wait((cv), (l))
+#else
+#define pgm_cv_wait(cv, l)  cv_wait_irq((cv), (l))
+#endif
+#define pgm_cv_signal(cv)   cv_signal((cv))
+#endif
 
 ///////////////////////////////////////////////////
 //            Process-Level Globals              //
@@ -373,7 +447,9 @@ static int prepare_graph(graph_t* graph, const char* graph_name)
 
 	pthread_mutexattr_t attr;
 	pthread_mutexattr_init(&attr);
+#ifndef PGM_PRIVATE
 	pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+#endif
 	pthread_mutex_init(&g->lock, &attr);
 	pthread_mutexattr_destroy(&attr);
 
@@ -410,7 +486,7 @@ static int is_valid_graph(graph_t graph)
 	return (graphs != 0) && is_valid_handle(graph) && graphs[graph].in_use;
 }
 
-#ifdef USE_FIFOS
+#ifdef PGM_USE_FIFOS
 static std::string fifo_name(pgm_graph* g,
 				pgm_node* producer, pgm_node* consumer,
 				pgm_edge* edge)
@@ -467,7 +543,7 @@ out:
 
 static void __destroy_graph(struct pgm_graph* g)
 {
-#ifdef USE_FIFOS
+#ifdef PGM_USE_FIFOS
 	for(int i = 0; i < g->nr_edges; ++i)
 	{
 		destroy_fifo(g,
@@ -476,11 +552,11 @@ static void __destroy_graph(struct pgm_graph* g)
 					 &(g->edges[i]));
 	}
 #endif
-#ifdef USE_OPTIMIZED_MSG_PASSING
+#ifdef PGM_USE_OPTIMIZED_MSG_PASSING
 	for(int i = 0; i < g->nr_nodes; ++i)
 	{
-		pthread_cond_destroy(&g->nodes[i].wait);
-		pthread_mutex_destroy(&g->nodes[i].lock);
+		pgm_cv_destroy(&g->nodes[i].wait);
+		pgm_lock_destroy(&g->nodes[i].lock);
 	}
 #endif
 
@@ -585,20 +661,9 @@ int pgm_init_node(node_t* node, graph_t graph, const char* name)
 	memset(n, 0, sizeof(*n));
 	strncpy(n->name, name, len);
 
-#ifdef USE_OPTIMIZED_MSG_PASSING
-	// initialize the node's mutex
-	pthread_mutexattr_t mattr;
-	pthread_mutexattr_init(&mattr);
-//	pthread_mutex_attr_settype(&mattr, PTHREAD_MUTEX_ADAPTIVE_NP);
-	pthread_mutexattr_setpshared(&mattr, 1);
-	pthread_mutex_init(&n->lock, &mattr);
-	pthread_mutexattr_destroy(&mattr);
-
-	pthread_condattr_t cattr;
-	pthread_condattr_init(&cattr);
-	pthread_condattr_setpshared(&cattr, 1);
-	pthread_cond_init(&n->wait, &cattr);
-	pthread_condattr_destroy(&cattr);
+#ifdef PGM_USE_OPTIMIZED_MSG_PASSING
+	pgm_lock_init(&n->lock);
+	pgm_cv_init(&n->wait);
 #endif
 
 	ret = 0;
@@ -630,11 +695,11 @@ int pgm_init_edge(edge_t* edge,
 	if(len <= 0 || len > PGM_EDGE_NAME_LEN)
 		goto out;
 
-#ifndef USE_OPTIMIZED_MSG_PASSING
+#ifndef PGM_USE_OPTIMIZED_MSG_PASSING
 	if(threshold != 1)
 	{
 		fprintf(stderr,
-			"libpgm must be compiled with USE_OPTIMIZED_MSG_PASSING to support "
+			"libpgm must be compiled with PGM_USE_OPTIMIZED_MSG_PASSING to support "
 			"thresholds > 1.");
 		goto out;
 	}
@@ -684,7 +749,7 @@ int pgm_init_edge(edge_t* edge,
 	e->nr_consume = consume;
 	e->nr_threshold = threshold;
 
-#ifdef USE_FIFOS
+#ifdef PGM_USE_FIFOS
 	ret = create_fifo(g, np, nc, e);
 #else
 	ret = 0;
@@ -1216,7 +1281,7 @@ int pgm_claim_node(node_t node, pid_t tid)
 	}
 	pthread_mutex_unlock(&g->lock);
 
-#ifdef USE_FIFOS
+#ifdef PGM_USE_FIFOS
 	// FIFOs are sensitive to the order in which the are opened
 	// by producers/consumers. We need to open in-edges first in
 	// order to avoid deadlock.
@@ -1256,7 +1321,7 @@ int pgm_claim_node(node_t node, pid_t tid)
 			assert(false);
 		}
 	}
-#endif // end USE_FIFOS
+#endif // end PGM_USE_FIFOS
 
 	ret = 0;
 
@@ -1281,7 +1346,7 @@ int pgm_release_node(node_t node, pid_t tid)
 	if(node.node < 0 || node.node >= g->nr_nodes || n->owner != tid)
 		goto out_unlock;
 
-#ifdef USE_FIFOS
+#ifdef PGM_USE_FIFOS
 	// Close the FIFOs in the reverse order they were opened (w.r.t. in vs out)
 	//
 	// close connections to the FIFOs.
@@ -1311,7 +1376,7 @@ int pgm_release_node(node_t node, pid_t tid)
 		}
 		e->fd_in = 0;
 	}
-#endif // end USE_FIFOS
+#endif // end PGM_USE_FIFOS
 
 	n->owner = 0;
 
@@ -1338,7 +1403,7 @@ enum eWaitStatus
 	WaitError
 };
 
-#ifdef USE_OPTIMIZED_MSG_PASSING
+#ifdef PGM_USE_OPTIMIZED_MSG_PASSING
 static int pgm_nr_ready_edges(struct pgm_graph* g, struct pgm_node* n)
 {
 	int nr_ready = 0;
@@ -1361,7 +1426,7 @@ static eWaitStatus pgm_wait_for_tokens(struct pgm_graph* g, struct pgm_node* n)
 		goto out;
 
 	// we have to wait
-	pthread_mutex_lock(&n->lock);
+	pgm_lock(&n->lock);
 	do
 	{
 	    // recheck the condition
@@ -1369,9 +1434,9 @@ static eWaitStatus pgm_wait_for_tokens(struct pgm_graph* g, struct pgm_node* n)
 		if(nr_ready == n->nr_in)
 			break;
 		// condition still does not hold -- wait for a signal
-		pthread_cond_wait(&n->wait, &n->lock);
+		pgm_cv_wait(&n->wait, &n->lock);
 	}while(1);
-	pthread_mutex_unlock(&n->lock);
+	pgm_unlock(&n->lock);
 
 out:
 	return WaitSuccess;
@@ -1401,15 +1466,15 @@ static void pgm_produce_tokens(struct pgm_graph* g, struct pgm_node* n)
 			// we fulfilled the requirements on this edge.
 			// we might need to signal the consumer.
 			struct pgm_node* c = &g->nodes[e->consumer];
-			pthread_mutex_lock(&c->lock);
+			pgm_lock(&c->lock);
 			if(pgm_nr_ready_edges(g, c) == c->nr_in)
-				pthread_cond_signal(&c->wait);
-			pthread_mutex_unlock(&c->lock);
+				pgm_cv_signal(&c->wait);
+			pgm_unlock(&c->lock);
 		}
 	}
 }
 
-#ifndef USE_FIFOS
+#ifndef PGM_USE_FIFOS
 static int pgm_signal_terminate(struct pgm_graph* g, struct pgm_node* n)
 {
 	for(int i = 0; i < n->nr_out; ++i)
@@ -1421,11 +1486,11 @@ static int pgm_signal_terminate(struct pgm_graph* g, struct pgm_node* n)
 	__sync_synchronize();
 	return 0;
 }
-#endif // end USE_FIFOS
-#endif // end USE_OPTIMIZED_MSG_PASSING
+#endif // end PGM_USE_FIFOS
+#endif // end PGM_USE_OPTIMIZED_MSG_PASSING
 
 
-#ifdef USE_FIFOS
+#ifdef PGM_USE_FIFOS
 #if (PGM_MAX_IN_DEGREE > 32 && PGM_MAX_IN_DEGREE <= 64)
 typedef uint64_t pgm_fd_mask_t;
 #elif (PGM_MAX_IN_DEGREE > 0 && PGM_MAX_IN_DEGREE <= 32)
@@ -1633,7 +1698,7 @@ retry:
 out:
 	return ret;
 }
-#endif // end USE_FIFOS
+#endif // end PGM_USE_FIFOS
 
 int pgm_wait(node_t node)
 {
@@ -1645,17 +1710,17 @@ int pgm_wait(node_t node)
 	// we assume initialization is done. use higher-level constructs, such
 	// as barriers, to ensure clean bring-up and shutdown.
 
-#ifdef USE_OPTIMIZED_MSG_PASSING
+#ifdef PGM_USE_OPTIMIZED_MSG_PASSING
 	pgm_wait_for_tokens(g, n); // wait for token counters to be full/ready
 #endif
 
-#ifdef USE_FIFOS
+#ifdef PGM_USE_FIFOS
 	ret = pgm_recv(g, n);      // actually read the token data
 #else
 	ret = (!n->should_terminate) ? 0 : TERMINATE;
 #endif
 
-#ifdef USE_OPTIMIZED_MSG_PASSING
+#ifdef PGM_USE_OPTIMIZED_MSG_PASSING
 	pgm_consume_tokens(g, n);  // consume the token counters
 #endif
 
@@ -1677,13 +1742,13 @@ static int pgm_produce(node_t node, token_t token)
 	// we assume initialization is done. use higher-level constructs, such
 	// as barriers, to ensure clean bring-up and shutdown.
 
-#ifdef USE_FIFOS
+#ifdef PGM_USE_FIFOS
 	ret = pgm_send(g, n, token);  // send the token data
 #else
 	ret = (token != TERMINATE) ? 0 : pgm_signal_terminate(g, n);
 #endif
 
-#ifdef USE_OPTIMIZED_MSG_PASSING
+#ifdef PGM_USE_OPTIMIZED_MSG_PASSING
 	pgm_produce_tokens(g, n);     // increment the token counters
 #endif
 

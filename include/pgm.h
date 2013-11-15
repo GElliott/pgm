@@ -5,44 +5,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-/*
- CONDITIONAL COMPILATION:    USE_OPTIMIZED_MSG_PASSING
-
- Use pthread_mutex and condition variables to signal between nodes when a node
- should have sufficient tokens to run. Token counters and synchronization
- variables are stored in shared memory.
-
- Note: This option is not required if USE_FIFOS is asserted. However, this may
- cause tasks to have to incrementally read tokens from FIFOs as they become
- available.
- */
-#define USE_OPTIMIZED_MSG_PASSING
-
-/*
- CONDITIONAL COMPILATION:    USE_FIFOS
-
- Transmit tokens via Unix FIFOs. Each byte represents one token.
-
- Note: This option is relatively useless while termination relies upon the
- TERMINATE token. Once the TERMINATE token is no longer needed, then the user
- should be able to transmit arbitrary bytes.
-
- TODO: Develop out-of-band method to signal termination that can work via
- both FIFOs and sockets. (The goal is to allow sockets for network-based PGM.
- FIFO support is a small step in this direction.) Of course, some sort of
- network discovery protocol will also be necessary to replace shared memory
- segments found in this current implementation.
- */
-/*#define USE_FIFOS*/
-
-/*
- USE_OPTIMIZED_MSG_PASSING and USE_FIFOS can be combined, but at least one
- must be asserted.
- */
-#if !defined(USE_FIFOS) && !defined(USE_OPTIMIZED_MSG_PASSING)
-#error "Cannot disable FIFOs without optimized message passing!"
-#endif
-
+#include "config.h"
 
 #define PGM_GRAPH_NAME_LEN		80
 #define PGM_EDGE_NAME_LEN		80

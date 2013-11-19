@@ -759,10 +759,13 @@ double producer_period(edge_t edge, void* user)
 {
 	const std::map<node_t, double, node_compare>& periods = *(std::map<node_t, double, node_compare>*)(user);
 	node_t producer = pgm_get_producer(edge);
+	int nr_thresh = pgm_nr_threshold(edge);
+	int nr_produce = pgm_nr_produce(edge);
+	int jobs_to_thresh = nr_thresh/nr_produce + (nr_thresh%nr_produce != 0);
 
 	std::map<node_t, double, node_compare>::const_iterator search = periods.find(producer);
 	assert(search != periods.end());
-	return search->second;
+	return search->second * jobs_to_thresh;
 }
 
 int main(int argc, char** argv)

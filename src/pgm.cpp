@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 
 #include <set>
+#include <queue>
 #include <string>
 #include <sstream>
 
@@ -14,6 +15,12 @@
 #include <boost/interprocess/sync/interprocess_mutex.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/functional/hash.hpp>
+
+#include <boost/graph/graph_traits.hpp>
+#include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/dijkstra_shortest_paths.hpp>
+#include <boost/graph/bellman_ford_shortest_paths.hpp>
+#include <boost/property_map/property_map.hpp>
 
 #ifdef PGM_USE_PTHREAD_SYNC
 typedef pthread_mutex_t pgm_lock_t;
@@ -62,7 +69,8 @@ struct pgm_edge
 #endif
 
 	/* Future: Add stats on thresholds, etc. */
-}__attribute__((packed));
+//}__attribute__((packed));
+};
 
 struct pgm_node
 {
@@ -86,7 +94,8 @@ struct pgm_node
 
 	pid_t owner;
 
-}__attribute__((packed));
+//}__attribute__((packed));
+};
 
 struct pgm_graph
 {
@@ -100,7 +109,8 @@ struct pgm_graph
 
 	int nr_edges;
 	struct pgm_edge edges[PGM_MAX_EDGES];
-}__attribute__((packed));
+//}__attribute__((packed));
+};
 
 
 ///////////////////////////////////////////////////
@@ -1080,6 +1090,34 @@ out:
 	return name;
 }
 
+node_t pgm_get_producer(edge_t edge)
+{
+	node_t n = {edge.graph, -1};
+	struct pgm_graph* g;
+	struct pgm_edge* e;
+	if(!is_valid_graph(edge.graph))
+		goto out;
+	g = &graphs[edge.graph];
+	e = &g->edges[edge.edge];
+	n.node = e->producer;
+out:
+	return n;
+}
+
+node_t pgm_get_consumer(edge_t edge)
+{
+	node_t n = {edge.graph, -1};
+	struct pgm_graph* g;
+	struct pgm_edge* e;
+	if(!is_valid_graph(edge.graph))
+		goto out;
+	g = &graphs[edge.graph];
+	e = &g->edges[edge.edge];
+	n.node = e->consumer;
+out:
+	return n;
+}
+
 int pgm_nr_produce(edge_t edge)
 {
 	int produced = -1;
@@ -1252,6 +1290,174 @@ int pgm_is_dag(graph_t graph)
 	return isDag;
 }
 
+
+///////////////////////////////////////////////////
+//        Longest/Shortest Path Routines         //
+///////////////////////////////////////////////////
+
+// We use boost's graph library (BGL) to compute longest and
+// shortest paths. In the future, we may just want to port
+// the entire PGM graph structures to BGL. Alternatively, we
+// may want to explore using BGL's adaptors to map PGM's graph
+// structures to a BGL interface. However, for now, we translate
+// between PGM's internal graphs structures and BGL on demand,
+// since BGL is incredibly complex and has a very steep learning
+// curve. This is not efficient, but these longest/shortest routines
+// should only be called during an initialization phase, so
+// speed is not terribly important.
+
+typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::directedS,
+		boost::no_property, boost::property<boost::edge_weight_t,
+		double> > bgraph_t;
+typedef boost::graph_traits<bgraph_t>::vertex_descriptor bnode_t;
+typedef std::pair<int, int> bedge_t;
+
+double pgm_get_max_depth(node_t target, pgm_weight_func_t wfunc, void* user)
+{
+	// We can use BGL to compute the longest path by negating
+	// edge weights. This is safe since the input graphs are
+	// are all DAGs.
+
+	double dist = -1.0;
+	struct pgm_graph* g;
+
+	if(!is_valid_graph(target.graph))
+		goto out;
+	if(!pgm_is_dag(target.graph))
+		goto out;
+	if(target.node < 0)
+		goto out;
+
+	g = &graphs[target.graph];
+
+	pthread_mutex_lock(&g->lock);
+	{
+		if(target.node >= g->nr_nodes)
+		{
+			pthread_mutex_unlock(&g->lock);
+			goto out;
+		}
+
+		bedge_t* edge_array = new bedge_t[g->nr_edges];
+		double* weights = new double[g->nr_edges];
+		for(int i = 0; i < g->nr_edges; ++i)
+		{
+			edge_array[i] =
+					std::make_pair(g->edges[i].producer, g->edges[i].consumer);
+		}
+		if(wfunc)
+		{
+			for(int i = 0; i < g->nr_edges; ++i)
+			{
+				edge_t external_rep = {target.graph, i};
+				weights[i] = -1.0*wfunc(external_rep, user);
+			}
+		}
+		else
+		{
+			std::fill(weights, weights + g->nr_edges, -1.0);
+		}
+
+		bgraph_t bgraph(edge_array, edge_array + g->nr_edges,
+						weights, g->nr_nodes);
+		std::vector<bnode_t> p(boost::num_vertices(bgraph));
+		std::vector<double> d(boost::num_vertices(bgraph));
+
+		dist = std::numeric_limits<double>::max();
+		for(int i = 0; i < g->nr_nodes; ++i)
+		{
+			if(g->nodes[i].nr_in != 0)
+				continue;
+			std::fill(d.begin(), d.end(), std::numeric_limits<double>::max());
+			d[i] = 0.0;
+			boost::bellman_ford_shortest_paths(bgraph,
+							boost::num_vertices(bgraph),
+							boost::predecessor_map(&p[0]).distance_map(&d[0]));
+			double adist = d[target.node];
+			if(adist > 0.0)
+				adist = std::numeric_limits<double>::max();
+			dist = std::min(dist, adist);
+		}
+
+		delete edge_array;
+		delete weights;
+	}
+	pthread_mutex_unlock(&g->lock);
+
+	dist *= -1.0; // negate the distance to get positive distance
+out:
+	return dist;
+}
+
+double pgm_get_min_depth(node_t target, pgm_weight_func_t wfunc, void* user)
+{
+	double dist = -1;
+	struct pgm_graph* g;
+
+	if(!is_valid_graph(target.graph))
+		goto out;
+	if(!pgm_is_dag(target.graph))
+		goto out;
+	if(target.node < 0)
+		goto out;
+
+	g = &graphs[target.graph];
+
+	pthread_mutex_lock(&g->lock);
+	{
+		if(target.node >= g->nr_nodes)
+		{
+			pthread_mutex_unlock(&g->lock);
+			goto out;
+		}
+
+		bedge_t* edge_array = new bedge_t[g->nr_edges];
+		double* weights = new double[g->nr_edges];
+		for(int i = 0; i < g->nr_edges; ++i)
+		{
+			edge_array[i] =
+					std::make_pair(g->edges[i].producer, g->edges[i].consumer);
+		}
+		if(wfunc)
+		{
+			for(int i = 0; i < g->nr_edges; ++i)
+			{
+				edge_t external_rep = {target.graph, i};
+				weights[i] = wfunc(external_rep, user);
+			}
+		}
+		else
+		{
+			std::fill(weights, weights + g->nr_edges, 1.0);
+		}
+
+		bgraph_t bgraph(edge_array, edge_array + g->nr_edges,
+						weights, g->nr_nodes);
+		std::vector<bnode_t> p(boost::num_vertices(bgraph));
+		std::vector<double> d(boost::num_vertices(bgraph));
+
+		dist = std::numeric_limits<double>::max();
+		for(int i = 0; i < g->nr_nodes; ++i)
+		{
+			if(g->nodes[i].nr_in != 0)
+				continue;
+			bnode_t bsource = boost::vertex(i, bgraph);
+			boost::dijkstra_shortest_paths(bgraph, bsource,
+							boost::predecessor_map(&p[0]).distance_map(&d[0]));
+			double adist = d[target.node];
+			if(adist < 0.0)
+				adist = std::numeric_limits<double>::max();
+			dist = std::min(dist, adist);
+		}
+
+		delete edge_array;
+		delete weights;
+	}
+	pthread_mutex_unlock(&g->lock);
+
+out:
+	return dist;
+}
 
 ///////////////////////////////////////////////////
 //            Node Ownership Routines            //
@@ -1455,6 +1661,9 @@ static void pgm_consume_tokens(struct pgm_graph* g, struct pgm_node* n)
 
 static void pgm_produce_tokens(struct pgm_graph* g, struct pgm_node* n)
 {
+	struct pgm_node* to_wake[PGM_MAX_OUT_DEGREE];
+	int nr_to_wake = 0;
+
 	for(int i = 0; i < n->nr_out; ++i)
 	{
 		struct pgm_edge* e = &g->edges[n->out[i]];
@@ -1465,12 +1674,20 @@ static void pgm_produce_tokens(struct pgm_graph* g, struct pgm_node* n)
 		{
 			// we fulfilled the requirements on this edge.
 			// we might need to signal the consumer.
-			struct pgm_node* c = &g->nodes[e->consumer];
-			pgm_lock(&c->lock);
-			if(pgm_nr_ready_edges(g, c) == c->nr_in)
-				pgm_cv_signal(&c->wait);
-			pgm_unlock(&c->lock);
+			to_wake[nr_to_wake++] = &g->nodes[e->consumer];
 		}
+	}
+
+	// TODO: Factor this out into a seperate function whereby
+	// the producer only has too boost priority (for real-time)
+	// for this code segment:
+	for(int i = 0; i < nr_to_wake; ++i)
+	{
+		struct pgm_node* c = to_wake[i];
+		pgm_lock(&c->lock);
+		if(pgm_nr_ready_edges(g, c) == c->nr_in)
+			pgm_cv_signal(&c->wait);
+		pgm_unlock(&c->lock);
 	}
 }
 

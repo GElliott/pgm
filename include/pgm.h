@@ -64,10 +64,18 @@ int pgm_degree(node_t node);
 int pgm_degree_in(node_t node);
 int pgm_degree_out(node_t node);
 const char* pgm_name(node_t node);
+node_t pgm_get_producer(edge_t edge);
+node_t pgm_get_consumer(edge_t edge);
 int pgm_nr_produce(edge_t edge);
 int pgm_nr_consume(edge_t edge);
 int pgm_nr_threshold(edge_t edge);
 int pgm_is_dag(graph_t graph);
+
+/* give positive weight of an edge */
+typedef double (*pgm_weight_func_t)(edge_t e, void* user);
+/* edge weight of 1.0 is used if w is NULL */
+double pgm_get_min_depth(node_t node, pgm_weight_func_t w = NULL, void* user = NULL);
+double pgm_get_max_depth(node_t node, pgm_weight_func_t w = NULL, void* user = NULL);
 
 int pgm_claim_node(node_t node, pid_t tid = 0);
 int pgm_release_node(node_t node, pid_t tid = 0);

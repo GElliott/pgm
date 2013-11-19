@@ -71,7 +71,7 @@ AR  := ${CROSS_COMPILE}${AR}
 # Targets
 
 all     = lib ${tools}
-tools   = basictest pgmrt pingpong
+tools   = basictest pgmrt pingpong depthtest
 
 .PHONY: all lib clean dump-config TAGS tags cscope help
 
@@ -118,13 +118,16 @@ libpgm.a: ${obj-lib}
 vpath %.cpp tools
 
 obj-basictest = basictest.o
-lib-basictest = -lpthread -lm -lrt -lboost_filesystem-mt -lboost_system-mt
+lib-basictest = -lpthread -lm -lrt -lboost_graph-mt -lboost_filesystem-mt -lboost_system-mt
 
 obj-pgmrt = pgmrt.o
-lib-pgmrt = -lpthread -lm -lrt -lboost_filesystem-mt -lboost_system-mt -lboost_program_options-mt ${liblitmus-flags}
+lib-pgmrt = -lpthread -lm -lrt -lboost_graph-mt -lboost_filesystem-mt -lboost_system-mt -lboost_program_options-mt ${liblitmus-flags}
 
 obj-pingpong = pingpong.o
-lib-pingpong = -lpthread -lm -lrt -lboost_system-mt -lboost_thread-mt
+lib-pingpong = -lpthread -lm -lrt -lboost_graph-mt -lboost_system-mt -lboost_thread-mt
+
+obj-depthtest = depthtest.o
+lib-depthtest = -lm -lrt -lboost_graph-mt -lboost_filesystem-mt -lboost_system-mt
 
 # ##############################################################################
 # Build everything that depends on liblitmus.

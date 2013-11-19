@@ -85,6 +85,7 @@ struct rt_config
 	int clusterSize;
 	int budget;
 
+	uint64_t phase_ns;
 	uint64_t period_ns;
 	uint64_t execution_ns;
 
@@ -344,6 +345,7 @@ void work_thread(rt_config cfg)
 	// become a real-time task
 	struct rt_task param;
 	init_rt_task_param(&param);
+	param.phase = cfg.phase_ns;
 	param.period = cfg.period_ns;
 	param.exec_cost = cfg.execution_ns;
 	if(cfg.cluster >= 0)
@@ -367,6 +369,9 @@ void work_thread(rt_config cfg)
 	}
 #else
 	uint64_t release_ns, response_ns;
+
+	// approximate a phased release
+	sleep_ns(cfg.phase_ns);
 #endif
 
 	int count = 0;
@@ -375,9 +380,8 @@ void work_thread(rt_config cfg)
 		// We become non-preemptive/boosted when we call
 		// pgm_wait() to ensure BOUNDED priority inversions.
 		//
-		// TODO: We can remove this once the waiting mechanism
-		// has been pushed down into the kernel (instead of a looping
-		// select()).
+		// Note: We can remove this once the waiting mechanism
+		// has been pushed down into the OS kernel.
 		if(!isRoot) {
 			T("(x) %s waits for tokens\n", pgm_name(cfg.node));
 			litmus_pgm_wait(ret = pgm_wait(cfg.node););
@@ -751,6 +755,16 @@ void parse_graph_file(
 	throw std::runtime_error("Graph files not yet implemented.");
 }
 
+double producer_period(edge_t edge, void* user)
+{
+	const std::map<node_t, double, node_compare>& periods = *(std::map<node_t, double, node_compare>*)(user);
+	node_t producer = pgm_get_producer(edge);
+
+	std::map<node_t, double, node_compare>::const_iterator search = periods.find(producer);
+	assert(search != periods.end());
+	return search->second;
+}
+
 int main(int argc, char** argv)
 {
 	program_options::options_description opts("Options");
@@ -809,6 +823,7 @@ int main(int argc, char** argv)
 		.cluster = -1,
 		.clusterSize = vm["clusterSize"].as<int>(),
 		.budget = (vm.count("budget") != 0),
+		.phase_ns = 0,
 		.period_ns = 0,
 		.execution_ns = 0,
 		.duration_ns = (uint64_t)s2ns(vm["duration"].as<double>())
@@ -848,7 +863,6 @@ int main(int argc, char** argv)
 			parse_graph_exec(vm["execution"].as<std::string>(), g, executions);
 			parse_graph_wss(vm["wss"].as<std::string>(), g, wss);
 			parse_graph_cluster(vm["cluster"].as<std::string>(), g, clusters);
-
 		}
 		else if(vm.count("graphfile") != 0) {
 			parse_graph_file(vm["graphfile"].as<std::string>(), g, nodes, edges);
@@ -878,6 +892,7 @@ int main(int argc, char** argv)
 		rt_config nodeCfg = cfg;
 		nodeCfg.cluster = clusters[*iter];
 		nodeCfg.node = *iter;
+		nodeCfg.phase_ns = ms2ns(pgm_get_max_depth(*iter, producer_period, &periods));
 		nodeCfg.period_ns = ms2ns(periods[*iter]);
 		nodeCfg.execution_ns = ms2ns(executions[*iter]);
 		threads.push_back(std::thread(work_thread, nodeCfg));
@@ -886,6 +901,7 @@ int main(int argc, char** argv)
 	// main thread handles first node
 	cfg.cluster = clusters[nodes[0]];
 	cfg.node = nodes[0];
+	cfg.phase_ns = ms2ns(pgm_get_max_depth(nodes[0], producer_period, &periods));
 	cfg.period_ns = ms2ns(periods[nodes[0]]);
 	cfg.execution_ns = ms2ns(executions[nodes[0]]);
 	work_thread(cfg);

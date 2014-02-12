@@ -94,7 +94,7 @@ void fifo_worker(Args args)
 				signalled = (bread != -1 && bread != 0);
 			}
 			++token;
-			ssize_t ret = write(fd_out, &token, sizeof(token)); 
+			ssize_t ret = write(fd_out, &token, sizeof(token));
 			assert(ret != -1);
 		}
 	}
@@ -120,7 +120,7 @@ void mq_worker(Args args)
 
 	memset(&attr, 0, sizeof(attr));
 	attr.mq_flags = O_NONBLOCK;
-	attr.mq_maxmsg = 1000;
+	attr.mq_maxmsg = 10;
 	attr.mq_msgsize = sizeof(token);
 
 	mode_t mode  = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH;
@@ -131,7 +131,7 @@ void mq_worker(Args args)
 		if(fd_out == -1) perror("bad open for writing");
 		args.b->wait();
 
-		fd_in = mq_open(args.mq_names[args.is_master].c_str(), O_RDONLY, mode, &attr);
+		fd_in = mq_open(args.mq_names[args.is_master].c_str(), O_RDONLY | O_CREAT, mode, &attr);
 		if(fd_in == -1) perror("bad open for reading");
 		args.b->wait();
 
@@ -143,7 +143,7 @@ void mq_worker(Args args)
 		if(fd_out == -1) perror("bad open for writing");
 		args.b->wait();
 
-		fd_in = mq_open(args.mq_names[args.is_master].c_str(), O_RDONLY, mode, &attr);
+		fd_in = mq_open(args.mq_names[args.is_master].c_str(), O_RDONLY | O_CREAT, mode, &attr);
 		if(fd_in == -1) perror("bad open for reading");
 		args.b->wait();
 

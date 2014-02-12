@@ -26,6 +26,9 @@ flags-optim    = -O2 -march=native
 flags-debug    = -Wall -Werror -Wno-unused-function
 flags-api      = -D_XOPEN_SOURCE=600 -D_GNU_SOURCE -pthread
 
+# Comment out 'flags-litmus' to disable Litmus support
+#flags-litmus   = -D_USE_LITMUS
+
 # architecture-specific flags
 flags-i386     = -m32
 flags-x86_64   = -m64
@@ -46,7 +49,11 @@ unistd-x86_64    = unistd.h unistd_64.h
 unistd-${ARCH}  ?= unistd.h
 
 # where to find header files
+ifdef flags-litmus
 liblitmus-headers = -I${LIBLITMUS}/include -I${LIBLITMUS}/arch/${include-${ARCH}}/include
+else
+liblitmus-headers =
+endif
 headers = -I${LIBPGM}/include
 
 # combine options
@@ -54,8 +61,11 @@ CPPFLAGS = ${flags-std} ${flags-optim} ${flags-debug} ${flags-api} ${flags-${ARC
 LDFLAGS  = ${flags-${ARCH}}
 
 # how to link against liblitmus
+ifdef flags-litmus
 liblitmus-flags = -L${LIBLITMUS} -llitmus
-
+else
+liblitmus-flags =
+endif
 
 # how to link against libpgm
 libpgm-flags = -L${LIBPGM} -lpgm
@@ -71,7 +81,7 @@ AR  := ${CROSS_COMPILE}${AR}
 # Targets
 
 all     = lib ${tools}
-tools   = basictest pgmrt pingpong depthtest
+tools   = cvtest basictest datapassingtest sockstreamtest pingpong depthtest pgmrt
 
 .PHONY: all lib clean dump-config TAGS tags cscope help
 
@@ -117,17 +127,26 @@ libpgm.a: ${obj-lib}
 # these source files are found in bin/
 vpath %.cpp tools
 
+obj-cvtest = cvtest.o
+lib-cvtest = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_system ${liblitmus-flags}
+
 obj-basictest = basictest.o
-lib-basictest = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_system
+lib-basictest = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_system ${liblitmus-flags}
+
+obj-datapassingtest = datapassingtest.o
+lib-datapassingtest = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_system ${liblitmus-flags}
+
+obj-sockstreamtest = sockstreamtest.o
+lib-sockstreamtest = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_system ${liblitmus-flags}
 
 obj-pgmrt = pgmrt.o
 lib-pgmrt = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_system -lboost_program_options ${liblitmus-flags}
 
 obj-pingpong = pingpong.o
-lib-pingpong = -lpthread -lm -lrt -lboost_graph -lboost_system -lboost_thread
+lib-pingpong = -lpthread -lm -lrt -lboost_graph -lboost_system -lboost_thread ${liblitmus-flags}
 
 obj-depthtest = depthtest.o
-lib-depthtest = -lm -lrt -lboost_graph -lboost_filesystem -lboost_system
+lib-depthtest = -lm -lrt -lboost_graph -lboost_filesystem -lboost_system ${liblitmus-flags}
 
 # ##############################################################################
 # Build everything that depends on liblitmus.

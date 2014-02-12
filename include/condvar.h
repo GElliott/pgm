@@ -48,20 +48,22 @@ static inline int cv_wait(cv_t* cv, ticketlock_t* l)
 	return ret;
 }
 
-static inline int cv_wait_irq(cv_t* cv, ticketlock_t* l)
+#ifndef PGM_PREEMPTIVE
+static inline int cv_wait_np(cv_t* cv, ticketlock_t* l, unsigned long *flags)
 {
 	int ret;
 	int wait_mode = (cv->mode == CV_PRIVATE) ? FUTEX_WAIT_PRIVATE : FUTEX_WAIT;
 	seq_t seq = cv->seq;
 
 	++cv->waiters;
-	tl_unlock_irqenable(l); /* memory barrier */
+	tl_unlock_np(l, *flags); /* memory barrier */
 	ret = syscall(SYS_futex, &cv->seq, wait_mode, seq, NULL, NULL, 0);
-	tl_lock_irqdisable(l);
+	tl_lock_np(l, flags);
 	--cv->waiters;
 
 	return ret;
 }
+#endif
 
 static inline int cv_signal(cv_t* cv)
 {

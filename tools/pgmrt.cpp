@@ -1,3 +1,5 @@
+/* A program for running a complex PGM application. */
+
 #include <iostream>
 #include <thread>
 #include <exception>
@@ -15,9 +17,33 @@
 #include <boost/math/common_factor.hpp>
 
 #include "pgm.h"
-#include "litmus.h"
 
-#define USE_LITMUS
+#ifdef _USE_LITMUS
+#include "litmus.h"
+#else
+// some useful routines from litmus that are useful
+// without using litmus all together.
+#define s2ns(s)   ((s)*1000000000LL)
+#define s2us(s)   ((s)*1000000LL)
+#define s2ms(s)   ((s)*1000LL)
+#define ms2ns(ms) ((ms)*1000000LL)
+#define ms2us(ms) ((ms)*1000LL)
+#define us2ns(us) ((us)*1000LL)
+#define ns2s(ns)  ((ns)/1000000000LL)
+#define ns2ms(ns) ((ns)/1000000LL)
+#define ns2us(ns) ((ns)/1000LL)
+#define us2ms(us) ((us)/1000LL)
+#define us2s(us)  ((us)/1000000LL)
+#define ms2s(ms)  ((ms)/1000LL)
+#include <linux/unistd.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+inline pid_t gettid(void)
+{
+	return syscall(__NR_gettid);
+}
+#endif
+
 //#define VERBOSE
 
 using namespace boost;
@@ -25,7 +51,7 @@ using namespace boost;
 #define CheckError(e) \
 do { \
 	int errcode = (e); \
-	if(errcode != 0) { \
+	if(errcode < 0) { \
 		fprintf(stderr, "Error %d @ %s:%s:%d\n",  \
 			errcode, __FILE__, __FUNCTION__, __LINE__); \
 	} \
@@ -33,7 +59,7 @@ do { \
 
 // macro to boost priority of tasks waiting for tokens
 // when compiled for Litmus.
-#ifdef USE_LITMUS
+#ifdef _USE_LITMUS
 // waiting task's priority is boosted as needed
 #define litmus_pgm_wait(statements) \
 	enter_pgm_wait(); \
@@ -52,7 +78,7 @@ do { \
 
 // trace macro for VERBOSE
 #ifdef VERBOSE
-#define T(...) fprintf(stdout, __VA_ARGS__)
+#define T(...) do { fprintf(stdout, __VA_ARGS__); fflush(stdout); } while (0)
 #else
 #define T(...)
 #endif
@@ -88,6 +114,11 @@ struct rt_config
 	uint64_t phase_ns;
 	uint64_t period_ns;
 	uint64_t execution_ns;
+	uint64_t discount_ns;
+	uint64_t loop_for_ns;
+	int      split_factor;
+
+	uint64_t expected_etoe;
 
 	uint64_t duration_ns;
 
@@ -155,24 +186,6 @@ void sleep_ns(uint64_t ns)
 	nanosleep(&ts, NULL);
 }
 
-#if 0
-uint64_t loop_once(void)
-{
-	// Do a busy loop over 4 pages (if sizeof(int) == 4).
-	// Note: Loop affects the cache.
-
-	static const size_t NUMS = 4096;
-	static __thread int64_t num[NUMS];
-
-	uint64_t s = 0;
-	for (size_t i = 0; i < NUMS; ++i) {
-		s += num[i]++;
-	}
-
-	return s;
-}
-#endif
-
 inline void relax(void)
 {
 #if defined(__i386__) || defined(__x86_64__)
@@ -201,18 +214,50 @@ uint64_t loop_once(void)
 	return i;
 }
 
-uint64_t loop_for(uint64_t exec_time, uint64_t emergency_exit)
+uint64_t loop_for(WorkingSet** ws, int numWs, int jobNum, uint64_t exec_time, uint64_t emergency_exit)
 {
-	uint64_t lastLoop = 0;
+	const uint64_t CHUNK_SIZE = (4*1024)/sizeof(WorkingSet::chunk_t);
 	uint64_t start = cputime_ns();
+	WorkingSet::chunk_t tmp = 0;
+	WorkingSet::chunk_t *p, *e;
+	int curWs = 0;
+	uint64_t lastLoop = 0;
 	uint64_t now = start;
 	uint64_t loopStart;
-	uint64_t tmp = 0;
 
-	/* a tight loop that touches virtually no data */
-	while (now + lastLoop < start + exec_time) {
+	/* Make sure we note the current time before initialization. */
+	__sync_synchronize();
+
+	if(numWs > 0) {
+		/* Cast away volatile because it's now okay to store these
+		   values in registers after the initial load. */
+		p = const_cast<WorkingSet::chunk_t*>(ws[curWs]->start(jobNum));
+		e = const_cast<WorkingSet::chunk_t*>(ws[curWs]->end(jobNum));
+	}
+	else {
+		p = NULL;
+		e = NULL;
+	}
+
+	while (now + lastLoop < start + exec_time)
+	{
 		loopStart = now;
-		tmp += loop_once();
+
+		if(numWs > 0) {
+			for(uint64_t count = 0; count < CHUNK_SIZE; ++count) {
+				tmp += *p++;
+				if(p == e) {
+					/* We're done with this edge. Move on to the next. */
+					curWs = (curWs+1 == numWs) ? 0 : curWs+1;
+					p = const_cast<WorkingSet::chunk_t*>(ws[curWs]->start(jobNum));
+					e = const_cast<WorkingSet::chunk_t*>(ws[curWs]->end(jobNum));
+				}
+			}
+		}
+		else {
+			tmp += loop_once();
+		}
+
 		now = cputime_ns();
 		lastLoop = now - loopStart;
 		if (unlikely(emergency_exit && wctime_ns() > emergency_exit)) {
@@ -267,13 +312,14 @@ bool job(const rt_config& cfg, int jobNum,
 	uint64_t programEnd)
 {
 	bool keepGoing = true;
-	if (unlikely(wctime_ns() > programEnd)) {
+	if (unlikely(programEnd && wctime_ns() > programEnd)) {
 		keepGoing = false;
 	}
 	else {
 		WorkingSet::chunk_t temp = jobNum;
 
-		uint64_t emergency_exit = programEnd + s2ns(1);
+		// let overrun by a second
+		uint64_t emergency_exit = (programEnd) ? programEnd + s2ns(1) : 0;
 
 		// consume data from predecessors
 		if(!consumeList.empty())
@@ -281,7 +327,7 @@ bool job(const rt_config& cfg, int jobNum,
 
 		// execution time
 		try {
-			(void) loop_for(cfg.execution_ns, emergency_exit);
+			(void) loop_for(&consumeList[0], consumeList.size(), jobNum, cfg.loop_for_ns, emergency_exit);
 		}
 		catch(const std::runtime_error& e) {
 			fprintf(stderr, "!!! pgmrt/%d emergency exit!\n", gettid());
@@ -296,27 +342,40 @@ bool job(const rt_config& cfg, int jobNum,
 	return keepGoing;
 }
 
+
+pthread_barrier_t worker_exit_barrier;
+
 void work_thread(rt_config cfg)
 {
 	int ret = 0;
-
-	bool isRoot = (pgm_degree_in(cfg.node) == 0);
-	uint64_t bailoutTime = wctime_ns() + cfg.duration_ns;
+	int degree_in = pgm_get_degree_in(cfg.node);
+	int degree_out = pgm_get_degree_out(cfg.node);
+	bool isSrc = (degree_in == 0);
 
 	// claim the node and open up FIFOs, etc.
 	CheckError(pgm_claim_node(cfg.node));
 
+	// how long should we loop, accounting for time spent reading/writing
+	if (cfg.execution_ns < cfg.discount_ns)
+	{
+		T("!!!WARNING!!! %d: read/write discount execeeds execution time.\n", pgm_get_name(cfg.node));
+		cfg.loop_for_ns = 0;
+	}
+	else
+	{
+		cfg.loop_for_ns = cfg.execution_ns - cfg.discount_ns;
+	}
 
 	std::vector<WorkingSet*> consumeWs, produceWs;
 
 	// get pointers to the working sets attached to cfg.node
 	{
-		edge_t* edges;
+		edge_t* edges = (edge_t*)calloc(degree_in, sizeof(edge_t));
 		int numEdges;
 
 		edges = NULL;
 		numEdges = 0;
-		CheckError(pgm_find_in_edges(cfg.node, &edges, &numEdges));
+		CheckError(pgm_get_edges_in(cfg.node, edges, numEdges));
 		for(int i = 0; i < numEdges; ++i) {
 			auto edgeWithWs = WorkingSet::edgeToWs.find(edges[i]);
 			if(edgeWithWs != WorkingSet::edgeToWs.end()) {
@@ -325,11 +384,11 @@ void work_thread(rt_config cfg)
 			}
 		}
 		free(edges);
-		T("%s has %d in-edges with working sets\n", pgm_name(cfg.node), (int)consumeWs.size());
+		T("%s has %d in-edges with working sets\n", pgm_get_name(cfg.node), (int)consumeWs.size());
 
-		edges = NULL;
+		edges = (edge_t*)calloc(degree_out, sizeof(edge_t));
 		numEdges = 0;
-		CheckError(pgm_find_out_edges(cfg.node, &edges, &numEdges));
+		CheckError(pgm_get_edges_out(cfg.node, edges, numEdges));
 		for(int i = 0; i < numEdges; ++i) {
 			auto edgeWithWs = WorkingSet::edgeToWs.find(edges[i]);
 			if(edgeWithWs != WorkingSet::edgeToWs.end()) {
@@ -338,32 +397,56 @@ void work_thread(rt_config cfg)
 			}
 		}
 		free(edges);
-		T("%s has %d out-edges with working sets\n", pgm_name(cfg.node), (int)produceWs.size());
+		T("%s has %d out-edges with working sets\n", pgm_get_name(cfg.node), (int)produceWs.size());
 	}
 
-#ifdef USE_LITMUS
+#ifdef _USE_LITMUS
+	bool isSink = (degree_out == 0);
+
 	// become a real-time task
 	struct rt_task param;
 	init_rt_task_param(&param);
-	param.phase = cfg.phase_ns;
+//	param.phase = cfg.phase_ns;
 	param.period = cfg.period_ns;
 	param.exec_cost = cfg.execution_ns;
+	param.split = cfg.split_factor;
 	if(cfg.cluster >= 0)
 		param.cpu = cluster_to_first_cpu(cfg.cluster, cfg.clusterSize);
 	param.budget_policy = (cfg.budget) ? PRECISE_ENFORCEMENT : NO_ENFORCEMENT;
-	param.release_policy = (isRoot) ? TASK_PERIODIC : TASK_EARLY;
+	param.release_policy = (isSrc) ? TASK_PERIODIC : TASK_EARLY;
 
+	if (isSrc && isSink)
+		param.pgm_type = PGM_SRC_SINK;
+	else if(isSrc)
+		param.pgm_type = PGM_SRC;
+	else if(isSink)
+		param.pgm_type = PGM_SINK;
+	else
+		param.pgm_type = PGM_INTERNAL;
+
+	param.pgm_expected_etoe = cfg.expected_etoe;
+
+	if(cfg.cluster >= 0) {
+		// Set our CPU affinity mask to put us on our cluster's
+		// CPUs. This must be done prior to entering real-time mode.
+		ret = be_migrate_to_cluster(cfg.cluster, cfg.clusterSize);
+		assert(ret == 0);
+	}
 	ret = set_rt_task_param(gettid(), &param);
 	assert(ret >= 0);
 
 	ret = task_mode(LITMUS_RT_TASK);
 	assert(ret == 0);
 
-	if(isRoot)
-		T("(i) %s is a root\n", pgm_name(cfg.node));
+	if(isSrc)
+		T("(i) %s is a src\n", pgm_get_name(cfg.node));
+	if(isSink)
+		T("(i) %s is a sink\n", pgm_get_name(cfg.node));
+
+	T("(i) %s exec: %lu\n", pgm_get_name(cfg.node), cfg.execution_ns);
 
 	if(cfg.syncRelease) {
-		T("(x) %s waiting for release\n", pgm_name(cfg.node));
+		T("(x) %s waiting for release\n", pgm_get_name(cfg.node));
 		ret = wait_for_ts_release();
 		assert(ret == 0);
 	}
@@ -374,6 +457,8 @@ void work_thread(rt_config cfg)
 	sleep_ns(cfg.phase_ns);
 #endif
 
+	uint64_t bailoutTime = (isSrc) ? wctime_ns() + cfg.duration_ns : 0;
+
 	int count = 0;
 	bool keepGoing;
 	do {
@@ -382,53 +467,57 @@ void work_thread(rt_config cfg)
 		//
 		// Note: We can remove this once the waiting mechanism
 		// has been pushed down into the OS kernel.
-		if(!isRoot) {
-			T("(x) %s waits for tokens\n", pgm_name(cfg.node));
+		if(!isSrc) {
+			T("(x) %s waits for tokens\n", pgm_get_name(cfg.node));
 			litmus_pgm_wait(ret = pgm_wait(cfg.node););
 		}
 
-#ifndef USE_LITMUS
+#ifndef _USE_LITMUS
 		// Approximate the release time. May slip due to unbounded priority
 		// inversions or scheduler delays.
 		release_ns = wctime_ns();
 #endif
 
-		if(ret != TERMINATE) {
+		if(ret != PGM_TERMINATE) {
 			CheckError(ret);
 
 			// do job
+			T("(x) %s starts work @ %lu.\n", pgm_get_name(cfg.node), cputime_ns());
 			keepGoing = job(cfg, count++, consumeWs, produceWs, bailoutTime);
+			T("(x) %s   ends work @ %lu.\n", pgm_get_name(cfg.node), cputime_ns());
 
 			// only allow roots to trigger a graph-wide bailout
-			if(isRoot && !keepGoing) {
+			if(isSrc && !keepGoing) {
 				CheckError(pgm_terminate(cfg.node));
 				break;
 			}
 			else {
-				T("(+) %s fired for %d time\n", pgm_name(cfg.node), count);
+				T("(+) %s fired for %d time\n", pgm_get_name(cfg.node), count);
 
 				litmus_pgm_complete(CheckError(pgm_complete(cfg.node)););
 
-#ifdef USE_LITMUS
+#ifdef _USE_LITMUS
 				sleep_next_period();
 #else
 				response_ns = wctime_ns() - release_ns;
 
 				// Sources sleep until the next "periodic" release.
-				if(isRoot && (response_ns < cfg.period_ns)) {
+				if(isSrc && (response_ns < cfg.period_ns)) {
 					uint64_t slack = cfg.period_ns - response_ns;
 					sleep_ns(slack);
 				}
 #endif
 			}
 		}
-	} while(ret != TERMINATE);
+	} while(ret != PGM_TERMINATE);
 
-	T("(-) %s terminates\n", pgm_name(cfg.node));
+	T("(-) %s terminates\n", pgm_get_name(cfg.node));
 
-#ifdef USE_LITMUS
+#ifdef _USE_LITMUS
 	task_mode(BACKGROUND_TASK);
 #endif
+
+	pthread_barrier_wait(&worker_exit_barrier);
 
 	CheckError(pgm_release_node(cfg.node));
 }
@@ -508,9 +597,14 @@ void parse_graph_description(
 		}
 
 		edge_t e;
+		edge_attr_t cv_attr;
+		memset(&cv_attr, 0, sizeof(cv_attr));
+		cv_attr.type = pgm_cv_edge;
+		cv_attr.nr_produce = nr_produce;
+		cv_attr.nr_consume = nr_consume;
+		cv_attr.nr_threshold = nr_threshold;
 		CheckError(pgm_init_edge(&e, nodeMap[nodePair[0]], nodeMap[nodePair[1]],
-				make_edge_name(nodePair[0], nodePair[1]).c_str(),
-				nr_produce, nr_consume, nr_threshold));
+				make_edge_name(nodePair[0], nodePair[1]).c_str(), &cv_attr));
 		edges.push_back(e);
 	}
 
@@ -534,15 +628,15 @@ void validate_rate(node_t n, const std::map<std::string, rate>& rates)
 {
 	bool valid = true;
 
-	node_t *preds;
-	int nr_preds;
-	pgm_find_predecessors(n, &preds, &nr_preds);
+	int nr_preds = pgm_get_degree_in(n);
+	node_t *preds = (node_t*)calloc(nr_preds, sizeof(node_t));
+	CheckError(pgm_get_predecessors(n, preds, nr_preds));
 
 	uint64_t scale = 1;
 	std::vector<std::pair<node_t, rate> > preds_w_rates;
 	preds_w_rates.reserve(nr_preds);
 	for(int i = 0; i < nr_preds; ++i) {
-		auto p = rates.find(std::string(pgm_name(preds[i])));
+		auto p = rates.find(std::string(pgm_get_name(preds[i])));
 		if(p != rates.end()) {
 			scale *= p->second.y;
 			preds_w_rates.push_back(std::make_pair(preds[i], p->second));
@@ -555,24 +649,24 @@ void validate_rate(node_t n, const std::map<std::string, rate>& rates)
 
 		edge_t e_prev, e_cur;
 		CheckError(pgm_find_edge(&e_prev, preds_w_rates[i-1].first, n,
-			make_edge_name(std::string(pgm_name(preds_w_rates[i-1].first)), std::string(pgm_name(n))).c_str()));
+			make_edge_name(std::string(pgm_get_name(preds_w_rates[i-1].first)), std::string(pgm_get_name(n))).c_str()));
 		CheckError(pgm_find_edge(&e_cur, preds_w_rates[i].first, n,
-			make_edge_name(std::string(pgm_name(preds_w_rates[i].first)), std::string(pgm_name(n))).c_str()));
+			make_edge_name(std::string(pgm_get_name(preds_w_rates[i].first)), std::string(pgm_get_name(n))).c_str()));
 
-		rate a = {pgm_nr_produce(e_prev) * prev.x * scale, prev.y * pgm_nr_consume(e_prev)};
-		rate b = {pgm_nr_produce(e_cur) * cur.x * scale, cur.y * pgm_nr_consume(e_cur)};
+		rate a = {pgm_get_nr_produce(e_prev) * prev.x * scale, prev.y * pgm_get_nr_consume(e_prev)};
+		rate b = {pgm_get_nr_produce(e_cur) * cur.x * scale, cur.y * pgm_get_nr_consume(e_cur)};
 
-		uint64_t p1 = (pgm_nr_produce(e_prev) * prev.x*(scale/prev.y)) / pgm_nr_consume(e_prev);
-		uint64_t p2 = (pgm_nr_produce(e_cur) * cur.x*(scale/cur.y)) / pgm_nr_consume(e_cur);
+		uint64_t p1 = (pgm_get_nr_produce(e_prev) * prev.x*(scale/prev.y)) / pgm_get_nr_consume(e_prev);
+		uint64_t p2 = (pgm_get_nr_produce(e_cur) * cur.x*(scale/cur.y)) / pgm_get_nr_consume(e_cur);
 
 		bool __valid = (a == b);
 
 		if(!__valid) {
 			printf("%s (%lu = %lu * (%lu / %lu)) "
 				  "and %s (%lu = %lu * (%lu / %lu)) incompatible\n",
-				  pgm_name(preds_w_rates[i-1].first),
+				  pgm_get_name(preds_w_rates[i-1].first),
 				  p1, prev.x, scale, prev.y,
-				  pgm_name(preds_w_rates[i].first),
+				  pgm_get_name(preds_w_rates[i].first),
 				  p2, cur.x, scale, cur.y
 				  );
 			valid = __valid;
@@ -580,10 +674,10 @@ void validate_rate(node_t n, const std::map<std::string, rate>& rates)
 	}
 
 	if(valid) {
-		T("%s has valid predecessor execution rates\n", pgm_name(n));
+		T("%s has valid predecessor execution rates\n", pgm_get_name(n));
 	}
 	else {
-		printf("%s has INvalid predecessor execution rates!!!\n", pgm_name(n));
+		printf("%s has INvalid predecessor execution rates!!!\n", pgm_get_name(n));
 	}
 
 	free(preds);
@@ -630,24 +724,24 @@ void parse_graph_rates(const std::string& rateString, graph_t g, std::map<node_t
 		CheckError(pgm_find_node(&n, g, thisNode->c_str()));
 		tovisit.erase(thisNode);
 
-		node_t* successors = NULL;
-		int numSuccessors;
-		CheckError(pgm_find_successors(n, &successors, &numSuccessors));
+		int numSuccessors = pgm_get_degree_out(n);
+		node_t* successors = (node_t*)calloc(numSuccessors, sizeof(node_t));
+		CheckError(pgm_get_successors(n, successors, numSuccessors));
 		if(numSuccessors == 0)
 			continue;
 
 		for(int i = 0; i < numSuccessors; ++i) {
-			const std::string sname(pgm_name(successors[i]));
+			const std::string sname(pgm_get_name(successors[i]));
 			assert(!sname.empty());
 
 			edge_t e;
 			CheckError(pgm_find_edge(&e, n, successors[i],
-				make_edge_name(std::string(pgm_name(n)), sname).c_str()));
+				make_edge_name(std::string(pgm_get_name(n)), sname).c_str()));
 
 			int produce, consume;
-			produce = pgm_nr_produce(e);
+			produce = pgm_get_nr_produce(e);
 			CheckError((produce < 1) ? -1 : 0);
-			consume = pgm_nr_consume(e);
+			consume = pgm_get_nr_consume(e);
 			CheckError((consume < 1) ? -1 : 0);
 			uint64_t y = ((uint64_t)consume * thisNodeRate.y) / (boost::math::gcd(produce*thisNodeRate.x, (uint64_t)consume));
 
@@ -686,6 +780,9 @@ void parse_graph_rates(const std::string& rateString, graph_t g, std::map<node_t
 
 void parse_graph_exec(const std::string& execs, graph_t g, std::map<node_t, double, node_compare>& exec_ms)
 {
+	if (execs.empty())
+		return;
+
 	std::vector<std::string> nodeNames;
 	boost::split(nodeNames, execs, boost::is_any_of(","));
 	for(auto nStr(nodeNames.begin()); nStr != nodeNames.end(); ++nStr) {
@@ -698,6 +795,31 @@ void parse_graph_exec(const std::string& execs, graph_t g, std::map<node_t, doub
 		node_t n;
 		CheckError(pgm_find_node(&n, g, nodeExecPair[0].c_str()));
 		exec_ms[n] = boost::lexical_cast<double>(nodeExecPair[1]);
+	}
+}
+
+void parse_graph_split_factor(const std::string& splits, graph_t g, std::map<node_t, int, node_compare>& split_factors)
+{
+	if (splits.empty())
+		return;
+
+	std::vector<std::string> nodeNames;
+	boost::split(nodeNames, splits, boost::is_any_of(","));
+	for(auto nStr(nodeNames.begin()); nStr != nodeNames.end(); ++nStr) {
+		std::vector<std::string> nodeSplitPair;
+		boost::split(nodeSplitPair, *nStr, boost::is_any_of(":"));
+		if (nodeSplitPair.size() != 2)
+			throw std::runtime_error(std::string("Invalid split factor: " + *nStr));
+
+		node_t n;
+		int sf;
+
+		CheckError(pgm_find_node(&n, g, nodeSplitPair[0].c_str()));
+
+		sf = boost::lexical_cast<int>(nodeSplitPair[1]);
+		if (sf < 0)
+			throw std::runtime_error(std::string("Invalid split factor: " + *nStr));
+		split_factors[n] = sf;
 	}
 }
 
@@ -759,8 +881,8 @@ double producer_period(edge_t edge, void* user)
 {
 	const std::map<node_t, double, node_compare>& periods = *(std::map<node_t, double, node_compare>*)(user);
 	node_t producer = pgm_get_producer(edge);
-	int nr_thresh = pgm_nr_threshold(edge);
-	int nr_produce = pgm_nr_produce(edge);
+	int nr_thresh = pgm_get_nr_threshold(edge);
+	int nr_produce = pgm_get_nr_produce(edge);
 	int jobs_to_thresh = nr_thresh/nr_produce + (nr_thresh%nr_produce != 0);
 
 	std::map<node_t, double, node_compare>::const_iterator search = periods.find(producer);
@@ -776,7 +898,6 @@ int main(int argc, char** argv)
 		("cluster,c", program_options::value<std::string>()->default_value(""), "CPU assignment for each node [<name>:<cluster or CPU ID>,]")
 		("clusterSize,z", program_options::value<int>()->default_value(1), "Cluster size")
 		("enforce,e", "Enable budget enforcement")
-		("scale,s", program_options::value<double>()->default_value(1.0), "Change time scale")
 		("graphfile", program_options::value<std::string>(), "File that describes PGM graph")
 		("name,n", program_options::value<std::string>()->default_value(""), "Graph name")
 		("graph,g", program_options::value<std::string>(),
@@ -785,8 +906,13 @@ int main(int argc, char** argv)
 		 	"Arrivial rates: [<name>:<#>:<interval>,]+ (interval in ms) (only for source nodes)")
 		("execution,x", program_options::value<std::string>(),
 		 	"Execution time requirements for nodes. [<name>:<time>,]+ (time in ms)")
+		("discount", program_options::value<std::string>()->default_value(""),
+		 	"Execution time DISCOUNT for nodes. [<name>:<time>,]+ (time in ms)")
+		("etoe", program_options::value<double>()->default_value(0.0), "Longest-path sum of periods in graph.")
 		("wss,b", program_options::value<std::string>()->default_value(""),
 			"Working set size requirements for edges. [<name>:<name>:<size>,]+ (size in kilobytes)")
+		("split,v", program_options::value<std::string>()->default_value(""),
+		 	"Job split factor of task for split-supporting schedulers [<name>:<split_factor>,]+. (default: 1)")
 		("wsCycle", program_options::value<int>()->default_value(1),
 			"Number of working sets allocated to each node, which are cycled through on produce/consume.")
 		("graphDir,d", program_options::value<std::string>()->default_value("/dev/shm/graphs"),
@@ -820,6 +946,8 @@ int main(int argc, char** argv)
 		exit(-1);
 	}
 
+	// TODO: If "etoe" was not given, then compute it from the graph structure
+
 	rt_config cfg =
 	{
 		.syncRelease = (vm.count("wait") != 0),
@@ -829,14 +957,26 @@ int main(int argc, char** argv)
 		.phase_ns = 0,
 		.period_ns = 0,
 		.execution_ns = 0,
+		.discount_ns = 0,
+		.loop_for_ns = 0,
+		.split_factor = 1,
+		.expected_etoe = (uint64_t)ms2ns(vm["etoe"].as<double>()),
 		.duration_ns = (uint64_t)s2ns(vm["duration"].as<double>())
 	};
 
 	int wsCycle = vm["wsCycle"].as<int>();
-
 	std::string name = vm["name"].as<std::string>();
 	std::string graphDir = vm["graphDir"].as<std::string>();
 	int master = (vm.count("continuation") == 0);
+
+	if(name != "") {
+		graphDir += name;
+	}
+	else {
+		char pidStr[PGM_GRAPH_NAME_LEN];
+		snprintf(pidStr, PGM_GRAPH_NAME_LEN, "%x", getpid());
+		graphDir += std::string("_") + std::string(pidStr);
+	}
 
 	CheckError(pgm_init(graphDir.c_str(), master));
 
@@ -845,6 +985,8 @@ int main(int argc, char** argv)
 	std::vector<edge_t> edges;
 	std::map<node_t, double, node_compare> periods;
 	std::map<node_t, double, node_compare> executions;
+	std::map<node_t, double, node_compare> discounts;
+	std::map<node_t, int,    node_compare> split_factors;
 	std::map<edge_t, double, edge_compare> wss;
 	std::map<node_t, double, node_compare> clusters;
 
@@ -864,6 +1006,8 @@ int main(int argc, char** argv)
 			parse_graph_description(vm["graph"].as<std::string>(), g, nodes, edges);
 			parse_graph_rates(vm["rates"].as<std::string>(), g, periods);
 			parse_graph_exec(vm["execution"].as<std::string>(), g, executions);
+			parse_graph_exec(vm["discount"].as<std::string>(), g, discounts);
+			parse_graph_split_factor(vm["split"].as<std::string>(), g, split_factors);
 			parse_graph_wss(vm["wss"].as<std::string>(), g, wss);
 			parse_graph_cluster(vm["cluster"].as<std::string>(), g, clusters);
 		}
@@ -880,7 +1024,7 @@ int main(int argc, char** argv)
 		exit(-1);
 	}
 
-#ifdef USE_LITMUS
+#ifdef _USE_LITMUS
 	init_litmus(); // prepare litmus
 #endif
 
@@ -889,6 +1033,7 @@ int main(int argc, char** argv)
 		WorkingSet::edgeToWs[ws->first] = new WorkingSet(ws->second, wsCycle);
 	}
 
+	pthread_barrier_init(&worker_exit_barrier, NULL, nodes.size());
 	// spawn of a thread for each node in graph
 	std::vector<std::thread> threads;
 	for(auto iter(nodes.begin() + 1); iter != nodes.end(); ++iter) {
@@ -898,6 +1043,11 @@ int main(int argc, char** argv)
 		nodeCfg.phase_ns = ms2ns(pgm_get_max_depth(*iter, producer_period, &periods));
 		nodeCfg.period_ns = ms2ns(periods[*iter]);
 		nodeCfg.execution_ns = ms2ns(executions[*iter]);
+		nodeCfg.discount_ns = ms2ns(discounts[*iter]);
+
+		if(split_factors.find(*iter) != split_factors.end())
+			nodeCfg.split_factor = split_factors[*iter];
+
 		threads.push_back(std::thread(work_thread, nodeCfg));
 	}
 
@@ -907,6 +1057,7 @@ int main(int argc, char** argv)
 	cfg.phase_ns = ms2ns(pgm_get_max_depth(nodes[0], producer_period, &periods));
 	cfg.period_ns = ms2ns(periods[nodes[0]]);
 	cfg.execution_ns = ms2ns(executions[nodes[0]]);
+	cfg.discount_ns = ms2ns(discounts[nodes[0]]);
 	work_thread(cfg);
 
 	for(auto t(threads.begin()); t != threads.end(); ++t) {

@@ -3,90 +3,83 @@
 #define PGM_CONFIG
 
 /*
- CONDITIONAL COMPILATION:    PGM_USE_OPTIMIZED_MSG_PASSING
-
- Use pthread_mutex and condition variables to signal between nodes when a node
- should have sufficient tokens to run. Token counters and synchronization
- variables are stored in shared memory.
-
- Note: This option is not required if USE_FIFOS is asserted. However, this may
- cause tasks to have to incrementally read tokens from FIFOs as they become
- available.
+ Select the primative to use for synchronization.
+ - For pthread sleeping-mutex + condition variables = 0
+ - For PGM spinlock + PGM condition variables       = 1
  */
-#define PGM_USE_OPTIMIZED_MSG_PASSING
+#ifndef _USE_LITMUS
+	#define PGM_SYNC_METHOD		0
+#else
+	/* Default to PGM spinlocks under Litmus */
+	#define	PGM_SYNC_METHOD		1
+#endif
 
 /*
- CONDITIONAL COMPILATION:    PGM_USE_PTHREAD_SYNC
- PRE-COND: defined(PGM_USE_OPTIMIZED_MSG_PASSING)
+ Select the method tasks use for becoming non-preemptive
+ while holding spinlocks.
+ - To allow preemption                 = 0
+ - Via disabling interrupts            = 1
+ - Via Litmus's non-preemtion sections = 2
 
- Use pthread's sleeping-mutex and condition variables
- for token signalling. Custom spinlocks and condition
- variables are used if this option is disabled.
+ Notes:
+  1) Options 1 and 2 require tasks to run as root.
+  2) Disabling interrupts may be unsafe for IPCs
+     that may block on write. (PGM uses non-blocking
+	 writes whenever possible.)
  */
-/*#define PGM_USE_PTHREAD_SYNC*/
+#ifndef _USE_LITMUS
+	#define PGM_NP_METHOD		0
+#else
+	/* Default to Litmus NP sections. */
+	#define PGM_NP_METHOD		2
+#endif
 
 /*
- CONDITIONAL COMPILATION:    PGM_INTERRUPT_DISABLING_LOCKS
- PRE-COND: !defined(PGM_USE_OPTIMIZED_MSG_PASSING)
+ Select support for synchronization between processes.
+ - Private synchronization = 0
+ - Shared synchronization  = 1
 
- Disable interrupts while PGM-internal spinlocks are held.
-
- Note: Your program MUST run as root. Also, a crash while
- running with interrupts disabled may ruin your day (may
- need to hard-reboot).
- */
-/*#define PGM_INTERRUPT_DISABLING_LOCKS*/
-
-/*
- CONDITIONAL COMPILATION:    PGM_PRIVATE
- PRE-COND: defined(PGM_USE_OPTIMIZED_MSG_PASSING)
-
- Optimizes performance for graphs used by a single
- process/address space.
-
- Note: Enabling this option will BREAK graphs split
- across processes.
+ Private syncrhonization is faster, but graphs may
+ not span multiple processes.
 */
-#define PGM_PRIVATE
-
-/*
- CONDITIONAL COMPILATION:    PGM_USE_FIFOS
-
- Transmit tokens via Unix FIFOs. Each byte represents one token.
-
- Note: This option is relatively useless while termination relies upon the
- TERMINATE token. Once the TERMINATE token is no longer needed, then the user
- should be able to transmit arbitrary bytes.
-
- TODO: Develop out-of-band method to signal termination that can work via
- both FIFOs and sockets. (The goal is to allow sockets for network-based PGM.
- FIFO support is a small step in this direction.) Of course, some sort of
- network discovery protocol will also be necessary to replace shared memory
- segments found in this current implementation.
- */
-/*#define PGM_USE_FIFOS*/
+#define PGM_SYNC_SCOPE		0
 
 
 /*** VALIDATE CONFGURATION ***/
 
-/*
- PGM_USE_OPTIMIZED_MSG_PASSING and PGM_USE_FIFOS can be combined, but at
- least one must be asserted.
- */
-#if !defined(PGM_USE_FIFOS) && !defined(PGM_USE_OPTIMIZED_MSG_PASSING)
-#error "Cannot disable FIFOs without optimized message passing!"
+#if (PGM_SYNC_METHOD == 0) && (PGM_NP_METHOD != 0)
+#error "Cannot disable interrupts using pthread synchronization."
 #endif
 
-#if defined(PGM_USE_PTHREAD_SYNC) && defined(PGM_INTERRUPT_DISABLING_LOCKS)
-#error "Cannot disable interrupts while using pthread sleep-locks."
+#if (PGM_SYNC_METHOD == 1) && (PGM_NP_METHOD == 0)
+#error "Spinlocks are unsafe without non-preemption."
 #endif
 
-#if defined(PGM_INTERRUPT_DISABLING_LOCKS) && defined(PGM_USE_FIFOS)
-#warn "Beware of blocking reads/writes while interrupts are disabled."
+
+/*** SET UP CONDITIONAL COMPILATION ***/
+
+#if (PGM_SYNC_METHOD == 0)
+	#define PGM_USE_PTHREAD_SYNC
+#elif (PGM_SYNC_METHOD == 1)
+	#define PGM_USE_PGM_SYNC
+#else
+	#error "Unknown synchronization method selected."
 #endif
 
-#if defined(PGM_PRIVATE)   && \
-	defined(PGM_USE_FIFOS) && \
-   !defined(PGM_USE_OPTIMIZED_MSG_PASSING)
-#warn "PGM_PRIVATE does not make sense without PGM_USE_OPTIMIZED_MSG_PASSING!"
+#if (PGM_NP_METHOD == 0)
+	#define PGM_PREEMPTIVE
+#elif (PGM_NP_METHOD == 1)
+	#define PGM_NP_INTERRUPTS
+#elif (PGM_NO_METHOD == 2)
+	#define PGM_NP_LITMUS
+#else
+	#error "Unknown non-preemption method."
+#endif
+
+#if (PGM_SYNC_SCOPE == 0)
+	#define PGM_PRIVATE
+#elif (PGM_SYNC_SCOPE == 1)
+	#define PGM_SHARED
+#else
+	#error "Unknown synchronization scope."
 #endif

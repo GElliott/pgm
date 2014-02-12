@@ -1,7 +1,14 @@
 #pragma once
 
 #include <stdint.h>
+
+#if defined(PGM_NP_INTERRUPTS)
 #include <sys/io.h>
+#endif
+
+#if defined(PGM_NP_LITMUS)
+#include "litmus.h"
+#endif
 
 #if ULONG_MAX == 0xffffffffffffffffUL
 typedef unsigned long long ticketdata_t;
@@ -30,12 +37,6 @@ static inline void tl_init(ticketlock_t* t)
 	*t = TICKETLOCK_INITIALIZER;
 }
 
-static inline void tl_init_w_irqcap(ticketlock_t *t)
-{
-	tl_init(t);
-	iopl(3);
-}
-
 static inline void __tl_lock(ticketlock_t* t)
 {
 	ticketlock_t updated = { __sync_fetch_and_add(&t->data, TL_INC) };
@@ -61,16 +62,56 @@ static inline void tl_unlock(ticketlock_t* t)
 	__tl_unlock(t);
 }
 
-static inline void tl_lock_irqdisable(ticketlock_t* t)
+#ifndef PGM_PREEMPTIVE
+static inline void tl_init_np(ticketlock_t *t)
 {
-	/* spinwait with interrupts disabled */
+	tl_init(t);
+
+#if defined(PGM_NP_INTERRUPTS)
+	iopl(3);
+#endif
+}
+
+static inline unsigned long save_flags(void)
+{
+	unsigned long flags;
+	asm volatile("pushf ; pop %0" : "=rm" (flags) : :"memory");
+	return flags;
+}
+
+static inline void restore_flags(unsigned long flags)
+{
+	asm volatile("push %0 ; popf" : : "g" (flags) : "memory", "cc");
+}
+
+static inline void tl_lock_np(ticketlock_t* t, unsigned long* flags)
+{
+#if defined(PGM_NP_INTERRUPTS)
+	/* save flags and disable interrupts */
+	*flags = save_flags();
 	asm volatile("cli": : :"memory");
+#elif defined(PGM_NP_LITMUS)
+	/* start non-preemption */
+	asm volatile("mfence": : :"memory");
+	enter_np();
+	asm volatile("mfence": : :"memory");
+#endif
+
 	__tl_lock(t);
 }
 
-static inline void tl_unlock_irqenable(ticketlock_t* t)
+static inline void tl_unlock_np(ticketlock_t* t, unsigned long flags)
 {
 	__tl_unlock(t);
-	/* re-enable interrupts before we exit */
-	asm volatile("sti": : :"memory");
+
+#if defined(PGM_NP_INTERRUPTS)
+	/* re-enable flags before we exit */
+	restore_flags(flags);
+#elif defined(PGM_NP_LITMUS)
+	/* end non-preemption */
+	asm volatile("mfence": : :"memory");
+	exit_np();
+	asm volatile("mfence": : :"memory");
+#endif
 }
+#endif

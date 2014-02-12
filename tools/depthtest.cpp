@@ -1,3 +1,5 @@
+/* A program for testing the shortest and longest path algorithms of PGM. */
+
 #include <iostream>
 #include <map>
 
@@ -6,7 +8,7 @@
 #include "pgm.h"
 
 #define CheckError(e) \
-if(e != 0) { \
+if(e < 0) { \
 	fprintf(stderr, "Error %d @ %s:%s:%d\n",  \
 		e, __FILE__, __FUNCTION__, __LINE__); \
 }

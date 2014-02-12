@@ -8,14 +8,14 @@
 #define PGM_GRAPH_NAME_LEN		80
 #define PGM_EDGE_NAME_LEN		80
 #define PGM_NODE_NAME_LEN		80
-#define PGM_MAX_NODES			(1024*4)	/* per graph */
-#define PGM_MAX_EDGES			(1024*4)	/* per graph */
-#define PGM_MAX_GRAPHS			128			/* per process */
+#define PGM_MAX_NODES			(1024*4)  /* per graph */
+#define PGM_MAX_EDGES			(1024*4)  /* per graph */
+#define PGM_MAX_GRAPHS			128       /* per process */
 
 #define PGM_MAX_IN_DEGREE		32
 #define PGM_MAX_OUT_DEGREE		PGM_MAX_IN_DEGREE
 
-#define __PGM_SIGNALED        0x80000000
+#define __PGM_SIGNALED         0x80000000
 #define __PGM_DATA_PASSING     0x40000000
 
 #define __PGM_EDGE_CV          0x00000001
@@ -30,7 +30,7 @@ typedef enum
 	   if there are multiple inbound signaled edges. */
 
 	/* condition variable-based IPC */
-	pgm_cv_edge			= (__PGM_EDGE_CV   | __PGM_SIGNALED),
+	pgm_cv_edge		= (__PGM_EDGE_CV   | __PGM_SIGNALED),
 	/* named FIFO IPC */
 	pgm_fast_fifo_edge	= (__PGM_EDGE_FIFO | __PGM_SIGNALED | __PGM_DATA_PASSING),
 	/* POSIX message queue IPC */
@@ -530,7 +530,7 @@ static int pgm_find_graph(graph_t* graph, unsigned int numerical_name)
 }
 
 static int pgm_init_node(node_t* node, graph_t graph,
-						unsigned int numerical_name)
+				unsigned int numerical_name)
 {
 	char name[PGM_NODE_NAME_LEN];
 	snprintf(name, PGM_NODE_NAME_LEN, "%x", numerical_name);
@@ -538,7 +538,7 @@ static int pgm_init_node(node_t* node, graph_t graph,
 }
 
 static int pgm_find_node(node_t* node, graph_t graph,
-						unsigned int numerical_name)
+				unsigned int numerical_name)
 {
 	char name[PGM_NODE_NAME_LEN];
 	snprintf(name, PGM_NODE_NAME_LEN, "%x", numerical_name);
@@ -555,8 +555,8 @@ static int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer,
 }
 
 static int pgm_find_edge(edge_t* edge, node_t producer, node_t consumer,
-						unsigned int numerical_name,
-						edge_attr_t* attrs = NULL)
+				unsigned int numerical_name,
+				edge_attr_t* attrs = NULL)
 {
 	char name[PGM_EDGE_NAME_LEN];
 	snprintf(name, PGM_EDGE_NAME_LEN, "%x", numerical_name);

@@ -1,13 +1,13 @@
 pgm
 ===
 
-A soft real-time implementation of the Processing Graph Method (PGM) on top of Litmus^RT
+A soft real-time implementation of the Processing Graph Method (PGM) on top of LITMUS^RT
 
 Overview
 ========
 
 This project aims to create a soft real-time implementation of the U.S. Navy's
-Processing Graph Method (PGM) on top of Litmus^RT---a real-time patch to the
+Processing Graph Method (PGM) on top of LITMUS^RT---a real-time patch to the
 Linux kernel [1].
 
 Recent work by C. Liu and J. Anderson developed methods for global scheduling
@@ -26,13 +26,25 @@ serial pipeline model. Soft real-time guarantees for these workloads are
 clearly desirable, but are not realized due to a lack of operating system
 support.
 
-[1] Litmus^RT: http://www.litmus-rt.org
+[1] LITMUS^RT: http://www.litmus-rt.org
 --on github: https://github.com/LITMUS-RT/litmus-rt
 
 [2] C. Liu and J. H. Anderson, "Supporting Soft Real-Time DAG-based Systems on
 Multiprocessors with No Utilization Loss", Proceedings of the 31st IEEE Real-Time
 Systems Symposium, pp. 3-13, December 2010.
 --available here: http://www.cs.unc.edu/~anderson/papers/rtss10b.pdf
+
+Compilation
+===========
+
+PGM^RT supports POSIX-compatible systems. However, better performance for
+real-time scheduling can be achieved by using the LITMUS^RT Linux kernel.
+
+To enable LITMUS^RT support, uncomment 'flags-litmus' line in the Makefile.
+
+You must patch LITMUS^RT (version 2013.1) to support PGM^RT. Source
+code is available here:
+-- http://wiki.litmus-rt.org/litmus/Publications
 
 License
 =======

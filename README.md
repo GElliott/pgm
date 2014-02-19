@@ -1,5 +1,5 @@
-pgm
-===
+PGM^RT
+======
 
 A soft real-time implementation of the Processing Graph Method (PGM) on top of LITMUS^RT
 

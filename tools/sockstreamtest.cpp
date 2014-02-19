@@ -1,3 +1,6 @@
+// Copyright (c) 2014, Glenn Elliott
+// All rights reserved.
+
 /* A program for testing the sock_stream (TCP) edge type. */
 
 #include <iostream>

@@ -1,3 +1,6 @@
+// Copyright (c) 2014, Glenn Elliott
+// All rights reserved.
+
 /* A program for testing the basic condition-variable-based edge. */
 
 #include <iostream>

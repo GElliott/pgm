@@ -1,3 +1,6 @@
+// Copyright (c) 2014, Glenn Elliott
+// All rights reserved.
+
 /* A program for testing the shortest and longest path algorithms of PGM. */
 
 #include <iostream>

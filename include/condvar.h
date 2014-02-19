@@ -1,3 +1,6 @@
+// Copyright (c) 2014, Glenn Elliott
+// All rights reserved.
+
 #pragma once
 
 #include <sys/syscall.h>

@@ -1,3 +1,6 @@
+// Copyright (c) 2014, Glenn Elliott
+// All rights reserved.
+
 /* Program for testing all edge types (except for sock_stream). */
 
 #include <iostream>

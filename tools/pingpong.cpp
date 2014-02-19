@@ -1,3 +1,6 @@
+// Copyright (c) 2014, Glenn Elliott
+// All rights reserved.
+
 // Quick and dirty tool to investigate the signalling latencies
 // of FIFO queues and POSIX Message Queues.
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2014, Glenn Elliott
+// All rights reserved.
+
 /* A program for running a complex PGM application. */
 
 #include <iostream>

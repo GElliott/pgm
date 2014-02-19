@@ -108,7 +108,6 @@ struct rt_config
 {
 	bool syncRelease;
 	int cluster;
-	int clusterSize;
 	int budget;
 
 	uint64_t phase_ns;
@@ -411,7 +410,7 @@ void work_thread(rt_config cfg)
 	param.exec_cost = cfg.execution_ns;
 	param.split = cfg.split_factor;
 	if(cfg.cluster >= 0)
-		param.cpu = cluster_to_first_cpu(cfg.cluster, cfg.clusterSize);
+		param.cpu = domain_to_first_cpu(cfg.cluster);
 	param.budget_policy = (cfg.budget) ? PRECISE_ENFORCEMENT : NO_ENFORCEMENT;
 	param.release_policy = (isSrc) ? TASK_PERIODIC : TASK_EARLY;
 
@@ -429,7 +428,7 @@ void work_thread(rt_config cfg)
 	if(cfg.cluster >= 0) {
 		// Set our CPU affinity mask to put us on our cluster's
 		// CPUs. This must be done prior to entering real-time mode.
-		ret = be_migrate_to_cluster(cfg.cluster, cfg.clusterSize);
+		ret = be_migrate_to_domain(cfg.cluster);
 		assert(ret == 0);
 	}
 	ret = set_rt_task_param(gettid(), &param);
@@ -896,7 +895,7 @@ int main(int argc, char** argv)
 	opts.add_options()
 		("wait,w", "Wait for release")
 		("cluster,c", program_options::value<std::string>()->default_value(""), "CPU assignment for each node [<name>:<cluster or CPU ID>,]")
-		("clusterSize,z", program_options::value<int>()->default_value(1), "Cluster size")
+		("clusterSize,z", program_options::value<int>()->default_value(1), "Cluster size (ignored)")
 		("enforce,e", "Enable budget enforcement")
 		("graphfile", program_options::value<std::string>(), "File that describes PGM graph")
 		("name,n", program_options::value<std::string>()->default_value(""), "Graph name")
@@ -952,7 +951,6 @@ int main(int argc, char** argv)
 	{
 		.syncRelease = (vm.count("wait") != 0),
 		.cluster = -1,
-		.clusterSize = vm["clusterSize"].as<int>(),
 		.budget = (vm.count("budget") != 0),
 		.phase_ns = 0,
 		.period_ns = 0,

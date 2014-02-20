@@ -47,7 +47,7 @@ void* thread(void* _graph_t)
 
 	char tabbuf[] = "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t";
 	int iterations = 0;
-	int ret;
+	int ret = 0;
 
 	const graph_t& graph = *((graph_t*)_graph_t);
 	node_t node;

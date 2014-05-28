@@ -23,7 +23,7 @@ LIBPGM = .
 # compiler flags
 flags-std      = -std=gnu++11
 flags-optim    = -O2 -march=native
-flags-debug    = -Wall -Werror -Wno-unused-function
+flags-debug    = -Wall -Werror -Wno-unused-function -Wno-sign-compare
 flags-api      = -D_XOPEN_SOURCE=600 -D_GNU_SOURCE -pthread
 
 # Comment out 'flags-litmus' to disable Litmus support
@@ -81,7 +81,7 @@ AR  := ${CROSS_COMPILE}${AR}
 # Targets
 
 all     = lib ${tools}
-tools   = cvtest basictest datapassingtest sockstreamtest pingpong depthtest pgmrt
+tools   = cvtest ringtest basictest datapassingtest sockstreamtest pingpong depthtest pgmrt
 
 .PHONY: all lib clean dump-config TAGS tags cscope help
 
@@ -130,6 +130,9 @@ vpath %.cpp tools
 obj-cvtest = cvtest.o
 lib-cvtest = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_system ${liblitmus-flags}
 
+obj-ringtest = ringtest.o
+lib-ringtest = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_system ${liblitmus-flags}
+
 obj-basictest = basictest.o
 lib-basictest = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_system ${liblitmus-flags}
 
@@ -146,7 +149,7 @@ obj-pingpong = pingpong.o
 lib-pingpong = -lpthread -lm -lrt -lboost_graph -lboost_system -lboost_thread ${liblitmus-flags}
 
 obj-depthtest = depthtest.o
-lib-depthtest = -lm -lrt -lboost_graph -lboost_filesystem -lboost_system ${liblitmus-flags}
+lib-depthtest = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_system ${liblitmus-flags}
 
 # ##############################################################################
 # Build everything that depends on liblitmus.

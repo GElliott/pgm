@@ -37,6 +37,8 @@ typedef ticketlock_t    pgm_lock_t;
 typedef cv_t            pgm_cv_t;
 #endif
 
+#include "ring.h"
+
 using namespace std;
 using namespace boost;
 using namespace boost::interprocess;
@@ -141,21 +143,34 @@ struct pgm_edge
 
 	// the remaining fields are used by data-passing edges
 
-	// fd_out and fd_in may be the same
-	// if different ends of FIFOs are
-	// opened by different processes.
-	int fd_out;
-	int fd_in;
+	union
+	{
+		// fields for standard data-passing IPCs
+		struct
+		{
+			// fd_out and fd_in may be the same
+			// if different ends of FIFOs are
+			// opened by different processes.
+			int fd_out;
+			int fd_in;
+
+			// counter for determining location of the message
+			// header contained within received data.
+			size_t next_tag;
+		};
+		// fields for ring buffer IPC
+		struct
+		{
+			struct ring ringbuf;
+			volatile pgm_command_t ring_cmd;
+		};
+	};
 
 	// buffer for sending data
 	struct pgm_memory_hdr* buf_out;
 
 	// buffer for receiving data
 	struct pgm_memory_hdr* buf_in;
-
-	// counter for determining location of the message
-	// header contained within received data.
-	size_t next_tag;
 };
 
 static inline bool is_signal_driven(const struct pgm_edge_attr* attr)
@@ -266,6 +281,126 @@ static ssize_t dummy_edge_write(struct pgm_edge* e, const void* buf, size_t nbyt
 {
 	return 0;
 }
+
+/************* RING IPC ROUTINES *****************/
+static int ring_init(pgm_graph* g,
+				pgm_node* producer, pgm_node* consumer,
+				pgm_edge* edge)
+{
+	int ret = -1;
+
+	/* nr_produce/nr_consume interpreted as bytes passed between
+	   producer and consumer, per invocation. Impl. requires that
+	   nr_produce == nr_consume. */
+	if (edge->attr.nr_produce != edge->attr.nr_consume)
+		goto out;
+
+	ret = init_ring(&edge->ringbuf, edge->attr.nmemb, edge->attr.nr_produce);
+
+out:
+	return ret;
+}
+
+static int ring_open_consumer(pgm_graph* g,
+				pgm_node* producer, pgm_node* consumer,
+				pgm_edge* edge)
+{
+	edge->buf_in = __pgm_malloc_edge_buf(g, edge, false);
+	return 0;
+}
+
+static int ring_open_producer(pgm_graph* g,
+				pgm_node* producer, pgm_node* consumer,
+				pgm_edge* edge)
+{
+	edge->buf_out = __pgm_malloc_edge_buf(g, edge, true);
+	return 0;
+}
+
+static int ring_close_consumer(pgm_edge* edge)
+{
+	free(edge->buf_in);
+	edge->buf_in = 0;
+	return 0;
+}
+
+static int ring_close_producer(pgm_edge* edge)
+{
+	free(edge->buf_out);
+	edge->buf_out = 0;
+	return 0;
+}
+
+static int ring_destroy(pgm_graph* g,
+				pgm_node* producer, pgm_node* consumer,
+				pgm_edge* edge)
+{
+	free_ring(&edge->ringbuf);
+	return 0;
+}
+
+static ssize_t ring_read(struct pgm_edge* e, void* buf, size_t nbytes)
+{
+	assert(nbytes == e->attr.nr_produce);
+	assert(nbytes == e->attr.nr_consume);
+
+	switch(nbytes)
+	{
+	case 8:
+		read_ring(&e->ringbuf, (uint64_t*)buf);
+		break;
+	case 4:
+		read_ring(&e->ringbuf, (uint32_t*)buf);
+		break;
+	case 2:
+		read_ring(&e->ringbuf, (uint16_t*)buf);
+		break;
+	case 1:
+		read_ring(&e->ringbuf, (uint8_t*)buf);
+		break;
+	default:
+		read_vec_ring(&e->ringbuf, buf, nbytes);
+	}
+	return nbytes; /* assume always successful */
+}
+
+static ssize_t ring_write(struct pgm_edge* e, const void* buf, size_t nbytes)
+{
+	assert(nbytes == e->attr.nr_produce);
+	assert(nbytes == e->attr.nr_consume);
+
+	switch(nbytes)
+	{
+	case 8:
+		write_ring(&e->ringbuf, *(uint64_t*)buf);
+		break;
+	case 4:
+		write_ring(&e->ringbuf, *(uint32_t*)buf);
+		break;
+	case 2:
+		write_ring(&e->ringbuf, *(uint16_t*)buf);
+		break;
+	case 1:
+		write_ring(&e->ringbuf, *(uint8_t*)buf);
+		break;
+	default:
+		write_vec_ring(&e->ringbuf, buf, nbytes);
+	}
+	return nbytes; /* assume always successful */
+}
+
+static const struct pgm_edge_ops pgm_ring_edge_ops =
+{
+	.init = ring_init,
+	.open_consumer = ring_open_consumer,
+	.open_producer = ring_open_producer,
+	.close_consumer = ring_close_consumer,
+	.close_producer = ring_close_producer,
+	.destroy = ring_destroy,
+	.read = ring_read,
+	.write = ring_write,
+};
+
 
 /************* FIFO IPC ROUTINES *****************/
 static std::string fifo_name(pgm_graph* g,
@@ -858,7 +993,7 @@ static inline int is_producer_buf(void* userptr)
 	if(!ptr)
 		return 0;
 	if(ptr->assigned_edge.graph == BAD_EDGE.graph &&
-       ptr->assigned_edge.edge == BAD_EDGE.edge)
+	   ptr->assigned_edge.edge == BAD_EDGE.edge)
 		return 0;
 	return (ptr->producer_flag == 1);
 }
@@ -869,7 +1004,7 @@ static inline int is_consumer_buf(void* userptr)
 	if(!ptr)
 		return 0;
 	if(ptr->assigned_edge.graph == BAD_EDGE.graph &&
-       ptr->assigned_edge.edge == BAD_EDGE.edge)
+	   ptr->assigned_edge.edge == BAD_EDGE.edge)
 		return 0;
 	return (ptr->producer_flag == 0);
 }
@@ -880,7 +1015,7 @@ static inline int is_buf_assigned(void* userptr, edge_t* e = NULL)
 	if(!ptr)
 		return 0;
 	if(ptr->assigned_edge.graph == BAD_EDGE.graph &&
-       ptr->assigned_edge.edge == BAD_EDGE.edge)
+	   ptr->assigned_edge.edge == BAD_EDGE.edge)
 		return 0;
 	if(e)
 		*e = ptr->assigned_edge;
@@ -1081,7 +1216,7 @@ void* __pgm_swap_edge_buf(edge_t edge, void* new_uptr, bool swap_producer)
 		goto out;
 	}
 	if(hdr->assigned_edge.graph != BAD_EDGE.graph &&
-       hdr->assigned_edge.edge != BAD_EDGE.edge)
+	   hdr->assigned_edge.edge != BAD_EDGE.edge)
 	{
 		E("%p is already in use by an edge.\n", new_uptr);
 		goto out;
@@ -1093,7 +1228,7 @@ void* __pgm_swap_edge_buf(edge_t edge, void* new_uptr, bool swap_producer)
 	if(hdr->usersize != old_hdr->usersize)
 	{
 		E("Buffer %p is the wrong size. (is %lu, expected %lu)\n",
-          new_uptr, hdr->usersize, old_hdr->usersize);
+		  new_uptr, hdr->usersize, old_hdr->usersize);
 		goto out;
 	}
 
@@ -1151,7 +1286,7 @@ int pgm_swap_edge_bufs(void* a, void* b)
 	if(hdra->usersize != hdrb->usersize)
 	{
 		E("Buffers are not the same size: %p:%lu vs %p:%lu\n",
-          a, hdra->usersize, b, hdrb->usersize);
+		  a, hdra->usersize, b, hdrb->usersize);
 		goto out;
 	}
 
@@ -1731,6 +1866,19 @@ int pgm_init_edge(edge_t* edge,
 		E("Produce amnt. must equal consume amnt. for POSIX msg queues.\n");
 		goto out;
 	}
+	if(attr->type & __PGM_EDGE_RING)
+	{
+		if(attr->nr_produce != attr->nr_consume)
+		{
+			E("Produce amnt. must equal consume amnt. for ring buffers.\n");
+			goto out;
+		}
+		if(attr->nmemb == 0)
+		{
+			E("nmemb cannot be zero.\n");
+			goto out;
+		}
+	}
 
 	if(attr->nr_threshold < attr->nr_consume)
 		goto out;
@@ -1784,14 +1932,18 @@ int pgm_init_edge(edge_t* edge,
 	e->consumer = consumer.node;
 	e->attr = *attr;
 
-	if(attr->type & __PGM_EDGE_FIFO)
+	if     (attr->type & __PGM_EDGE_CV)
+		e->ops = &pgm_cv_edge_ops;
+	else if(attr->type & __PGM_EDGE_FIFO)
 		e->ops = &pgm_fifo_edge_ops;
 	else if(attr->type & __PGM_EDGE_MQ)
 		e->ops = &pgm_mq_edge_ops;
+	else if(attr->type & __PGM_EDGE_RING)
+		e->ops = &pgm_ring_edge_ops;
 	else if(attr->type & __PGM_EDGE_SOCK_STREAM)
 		e->ops = &pgm_sock_stream_edge_ops;
 	else
-		e->ops = &pgm_cv_edge_ops;
+		goto out_unlock;
 
 	ret = e->ops->init(g, np, nc, e);
 
@@ -2738,7 +2890,7 @@ static eWaitStatus pgm_wait_for_tokens(struct pgm_graph* g, struct pgm_node* n)
 	pgm_lock(&n->lock, flags);
 	do
 	{
-	    // recheck the condition
+		// recheck the condition
 		nr_ready = pgm_nr_ready_edges(g, n);
 		if(nr_ready == n->nr_in_signaled)
 			break;
@@ -2760,9 +2912,9 @@ static void pgm_consume_tokens(struct pgm_graph* g, struct pgm_node* n)
 {
 	for(int i = 0; i < n->nr_in; ++i)
 	{
-	    struct pgm_edge* e = &g->edges[n->in[i]];
+		struct pgm_edge* e = &g->edges[n->in[i]];
 		if(is_signal_driven(e))
-		    __sync_fetch_and_sub(&e->nr_pending, e->attr.nr_consume);
+			__sync_fetch_and_sub(&e->nr_pending, e->attr.nr_consume);
 	}
 }
 
@@ -2790,7 +2942,7 @@ typedef uint32_t pgm_fd_mask_t;
 
 static const unsigned char PGM_NORMAL = 0x01;
 
-static int pgm_send_data(struct pgm_edge* e, pgm_command_t tag = PGM_NORMAL)
+static int pgm_send_std_data(struct pgm_edge* e, pgm_command_t tag)
 {
 	// only the tag is sent if this is a terminate message
 
@@ -2832,6 +2984,23 @@ static int pgm_send_data(struct pgm_edge* e, pgm_command_t tag = PGM_NORMAL)
 		}
 	}
 	return ret;
+}
+
+static int pgm_send_ring_data(struct pgm_edge* e, pgm_command_t tag)
+{
+	if(!(tag & PGM_TERMINATE))
+		e->ops->write(e, pgm_get_user_ptr(e->buf_out), e->attr.nr_produce);
+	else
+		e->ring_cmd = tag;
+	return 0;
+}
+
+static int pgm_send_data(struct pgm_edge* e, pgm_command_t tag = PGM_NORMAL)
+{
+	if(!(e->attr.type & __PGM_EDGE_RING))
+		return pgm_send_std_data(e, tag);
+	else
+		return pgm_send_ring_data(e, tag);
 }
 
 static eWaitStatus pgm_wait_for_data(pgm_fd_mask_t* to_wait,
@@ -2880,7 +3049,7 @@ static eWaitStatus pgm_wait_for_data(pgm_fd_mask_t* to_wait,
 				++scanned;
 			}
 		}
-	    ++num_looped;
+		++num_looped;
 	}
 
 	return wait_status;
@@ -2945,6 +3114,16 @@ wait_for_data: // jump here if we would block on read
 		// skip over non-data-passing edges
 		if(!is_data_passing(e))
 			continue;
+
+		if(e->attr.type & __PGM_EDGE_RING)
+		{
+			/* short-cut for the simple ring buffer IPC */
+			if(!((e->ring_cmd & PGM_TERMINATE) && is_ring_empty(&e->ringbuf)))
+				e->ops->read(e, dest_ptrs[i], e->attr.nr_consume);
+			else
+				n->nr_terminate_msgs++;
+			continue;
+		}
 
 read_more: // jump to here if we need to read more bytes into our buffer
 
@@ -3094,14 +3273,14 @@ int pgm_wait(node_t node)
 	}
 
 	if(token_status == WaitExhaustedAndTerminate &&
-			data_status == WaitExhaustedAndTerminate)
+	   data_status == WaitExhaustedAndTerminate)
 	{
 		ret = PGM_TERMINATE;
 	}
 	else
 	{
 		ret = (token_status == WaitTimeout || token_status == WaitError ||
-			   data_status  == WaitTimeout || data_status  == WaitError) ?
+		       data_status  == WaitTimeout || data_status  == WaitError) ?
 				-1 : 0;
 	}
 

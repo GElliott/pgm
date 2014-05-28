@@ -24,7 +24,7 @@
 #define __PGM_EDGE_CV          0x00000001
 #define __PGM_EDGE_FIFO        0x00000002
 #define __PGM_EDGE_MQ          0x00000004
-#define __PGM_EDGE_CV_BUF      0x00000008 /* reserved */
+#define __PGM_EDGE_RING        0x00000008
 #define __PGM_EDGE_SOCK_STREAM 0x00000010
 
 typedef enum
@@ -34,6 +34,9 @@ typedef enum
 
 	/* condition variable-based IPC */
 	pgm_cv_edge		= (__PGM_EDGE_CV   | __PGM_SIGNALED),
+	/* Very low overhead IPC for passing POD data between nodes.
+	   Currently limited to nodes within the same process. */
+	pgm_ring_edge   = (__PGM_EDGE_RING | __PGM_SIGNALED | __PGM_DATA_PASSING),
 	/* named FIFO IPC */
 	pgm_fast_fifo_edge	= (__PGM_EDGE_FIFO | __PGM_SIGNALED | __PGM_DATA_PASSING),
 	/* POSIX message queue IPC */
@@ -90,6 +93,13 @@ typedef struct pgm_edge_attr
 	/* edge-type specific params */
 	union
 	{
+		struct /* Ring buffer params */
+		{
+			/* nr_produce/nr_consume interpreted as size of members */
+
+			/* Number of elements in ring buffer */
+			size_t nmemb;
+		};
 		struct /* POSIX message queue params */
 		{
 			/* Values > 10 may require root privilege. */

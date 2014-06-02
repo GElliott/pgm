@@ -130,7 +130,7 @@ int main(void)
 	ring_attr.nr_threshold = sizeof(uint32_t);
 	ring_attr.nmemb = 32;
 
-	CheckError(pgm_init("/tmp/graphs", 1));
+	CheckError(pgm_init_process_local());
 	CheckError(pgm_init_graph(&g, "demo"));
 
 	CheckError(pgm_init_node(&n0, g, "n0"));

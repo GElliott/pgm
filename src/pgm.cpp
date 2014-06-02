@@ -46,9 +46,7 @@ using namespace boost::filesystem;
 
 
 // TODO LIST:
-//  * In-memory buffers that can be passed from producer to consumer
-//    without any copies.
-//      BONUS: Shared memory support.
+//  * Ring buffers in shared memory.
 
 #ifndef PGM_CONFIG
 #error "pgm/include/config.h not included!"
@@ -420,19 +418,28 @@ static int fifo_create(pgm_graph* g,
 				pgm_edge* edge)
 {
 	int ret = -1;
-	string fifoName(fifo_name(g, producer, consumer, edge));
 
-	path fifoPath(gGraphPath);
-	fifoPath /= fifoName;
-
-	// Remove any old FIFO that may exist.
-	remove(fifoPath);
-
-	// TODO: See what boost can do here.
-	ret = mkfifo(fifoPath.string().c_str(), S_IRUSR | S_IWUSR);
-	if(0 != ret)
+	if(gGraphPath.string().empty())
 	{
-		F("Failed to make FIFO %s\n", fifoPath.string().c_str());
+		F("Graph directory not set. Did you call pgm_init_process_local() "
+		  "insted of pgm_init()?\n");
+	}
+	else
+	{
+		string fifoName(fifo_name(g, producer, consumer, edge));
+
+		path fifoPath(gGraphPath);
+		fifoPath /= fifoName;
+
+		// Remove any old FIFO that may exist.
+		remove(fifoPath);
+
+		// TODO: See what boost can do here.
+		ret = mkfifo(fifoPath.string().c_str(), S_IRUSR | S_IWUSR);
+		if(0 != ret)
+		{
+			F("Failed to make FIFO %s\n", fifoPath.string().c_str());
+		}
 	}
 	return ret;
 }
@@ -441,18 +448,28 @@ static int fifo_open_consumer(pgm_graph* g,
 				pgm_node* producer, pgm_node* consumer,
 				pgm_edge* edge)
 {
-	path fifoPath(gGraphPath);
-	fifoPath /= fifo_name(g, producer, consumer, edge);
-	edge->fd_in = open(fifoPath.string().c_str(), O_RDONLY | O_NONBLOCK);
-	if(edge->fd_in == -1)
+	int ret = -1;
+	if(gGraphPath.string().empty())
 	{
-		F("Could not open inbound edge %s/%s (FIFO)\n", g->name, edge->name);
-		return -1;
+		F("Graph directory not set. Did you call pgm_init_process_local() "
+		  "insted of pgm_init()?\n");
 	}
+	else
+	{
+		path fifoPath(gGraphPath);
+		fifoPath /= fifo_name(g, producer, consumer, edge);
+		edge->fd_in = open(fifoPath.string().c_str(), O_RDONLY | O_NONBLOCK);
 
-	edge->buf_in = __pgm_malloc_edge_buf(g, edge, false);
-
-	return 0;
+		if(edge->fd_in != -1)
+		{
+			edge->buf_in = __pgm_malloc_edge_buf(g, edge, false);
+		}
+		else
+		{
+			F("Could not open inbound edge %s/%s (FIFO)\n", g->name, edge->name);
+		}
+	}
+	return ret;
 }
 
 static int fifo_open_producer(pgm_graph* g,
@@ -460,41 +477,54 @@ static int fifo_open_producer(pgm_graph* g,
 				pgm_edge* edge)
 {
 	int ret = -1;
-	path fifoPath(gGraphPath);
-	fifoPath /= fifo_name(g, producer, consumer, edge);
 
-	const int timeout = 60;
-	const int start_time = time(0);
-	__sync_synchronize();
-	do
+	if(gGraphPath.string().empty())
 	{
-		edge->fd_out = open(fifoPath.string().c_str(), O_WRONLY | O_NONBLOCK);
-		if(edge->fd_out == -1)
+		F("Graph directory not set. Did you call pgm_init_process_local() "
+		  "insted of pgm_init()?\n");
+	}
+	else
+	{
+		path fifoPath(gGraphPath);
+		fifoPath /= fifo_name(g, producer, consumer, edge);
+
+		const int timeout = 60;
+		const int start_time = time(0);
+		__sync_synchronize();
+		do
 		{
-			if(errno != ENXIO)
+			edge->fd_out = open(fifoPath.string().c_str(),
+				O_WRONLY | O_NONBLOCK);
+			if(edge->fd_out == -1)
 			{
-				F("Could not open outbound edge %s/%s (FIFO)\n", g->name, edge->name);
-				break;
+				if(errno != ENXIO)
+				{
+					F("Could not open outbound edge %s/%s (FIFO)\n",
+					  g->name, edge->name);
+					break;
+				}
+				else
+				{
+					if(time(0) - start_time > timeout)
+					{
+						F("Could not open outbound edge %s/%s (FIFO)\n",
+						   g->name, edge->name);
+						break;
+					}
+					usleep(1000); // wait for a millisecond
+				}
 			}
 			else
 			{
-				if(time(0) - start_time > timeout)
-				{
-					F("Could not open outbound edge %s/%s (FIFO)\n", g->name, edge->name);
-					break;
-				}
-				usleep(1000); // wait for a millisecond
+				ret = 0;
 			}
-		}
-		else
+		}while(ret == -1);
+
+		if(!ret)
 		{
-			ret = 0;
+			edge->buf_out = __pgm_malloc_edge_buf(g, edge, true);
 		}
-	}while(ret == -1);
-
-	if(!ret)
-		edge->buf_out = __pgm_malloc_edge_buf(g, edge, true);
-
+	}
 	return ret;
 }
 
@@ -527,26 +557,32 @@ static int fifo_destroy(pgm_graph* g,
 				pgm_edge* edge)
 {
 	int ret = -1;
-	string fifoName(fifo_name(g, producer, consumer, edge));
 
-	path fifoPath(gGraphPath);
-	fifoPath /= fifoName;
-
-	if(edge->buf_in != 0 || edge->buf_out != 0)
+	if(gGraphPath.string().empty())
 	{
-		W("Edge has not been closed: (producer:%s, consumer:%s)!\n",
-			(edge->buf_out != 0) ? "open" : "closed",
-			(edge->buf_in != 0) ? "open" : "closed");
+		F("Graph directory not set. Did you call pgm_init_process_local() "
+		  "insted of pgm_init()?\n");
+	}
+	else
+	{
+		string fifoName(fifo_name(g, producer, consumer, edge));
+		path fifoPath(gGraphPath);
+		fifoPath /= fifoName;
+
+		if(edge->buf_in != 0 || edge->buf_out != 0)
+		{
+			W("Edge has not been closed: (producer:%s, consumer:%s)!\n",
+				(edge->buf_out != 0) ? "open" : "closed",
+				(edge->buf_in != 0) ? "open" : "closed");
+		}
+
+		if(exists(fifoPath) &&
+		   remove(fifoPath))
+		{
+			ret = 0;
+		}
 	}
 
-	if(!exists(fifoPath))
-		goto out;
-	if(!remove(fifoPath))
-		goto out;
-
-	ret = 0;
-
-out:
 	return ret;
 }
 
@@ -1566,6 +1602,12 @@ static int prepare_graph_private_mem(void)
 		gIsGraphMaster = true;
 		ret = 0;
 	}
+	return ret;
+}
+
+int pgm_init_process_local(void)
+{
+	int ret = prepare_graph_private_mem();
 	return ret;
 }
 

@@ -126,6 +126,17 @@ static const edge_attr_t default_edge = {
 };
 
 /*
+   Initialize the PGM runtime in the application for cases where
+   graph nodes are always (1) process-local (threads within the same
+   process) and (2) FIFO-based edges are never used.
+
+   Use pgm_init() if nodes are cross-process, or FIFO edges
+   are needed. If just FIFO edges are needed and nodes are not
+   cross-process, pass "use_shared_mem=0" to pgm_init().
+*/
+int pgm_init_process_local(void);
+
+/*
    Initialize the PGM runtime in the application.
      [in] dir: Directory where PGM data is stored.
      [in] create:

@@ -56,6 +56,10 @@ liblitmus-headers =
 endif
 headers = -I${LIBPGM}/include
 
+ifdef flags-litmus
+flags-api += ${flags-litmus}
+endif
+
 # combine options
 CPPFLAGS = ${flags-std} ${flags-optim} ${flags-debug} ${flags-api} ${flags-${ARCH}} -DARCH=${ARCH} ${liblitmus-headers} ${headers}
 LDFLAGS  = ${flags-${ARCH}}
@@ -182,11 +186,13 @@ ifneq ($(filter-out clean help,$(MAKECMDGOALS)),)
 -include ${obj-all:.o=.d}
 
 # Let's make sure the liblitmus header path is ok.
+ifdef flags-litmus
 config-ok  := $(shell test -d "${LIBLITMUS}" || echo invalid path. )
 ifneq ($(strip $(config-ok)),)
 $(info (!!) Could not find liblitmus at ${LIBLITMUS}: ${config-ok})
 $(info (!!) Are you sure the path is correct?)
 $(error Cannot build without liblitmus)
+endif
 endif
 
 endif

@@ -73,7 +73,7 @@
 	#define PGM_PREEMPTIVE
 #elif (PGM_NP_METHOD == 1)
 	#define PGM_NP_INTERRUPTS
-#elif (PGM_NO_METHOD == 2)
+#elif (PGM_NP_METHOD == 2)
 	#define PGM_NP_LITMUS
 #else
 	#error "Unknown non-preemption method."

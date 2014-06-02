@@ -7,7 +7,8 @@ Overview
 ========
 
 This project aims to create a soft real-time implementation of the U.S. Navy's
-Processing Graph Method (PGM) on top of LITMUS^RT---a real-time patch to the
+Processing Graph Method (PGM). It can run on any POSIX-compatible system, but PGM^RT
+also includes optimizations to run on top of LITMUS^RT---a real-time patch to the
 Linux kernel [1].
 
 Recent work by C. Liu and J. Anderson developed methods for global scheduling
@@ -46,6 +47,13 @@ To enable LITMUS^RT support, uncomment 'flags-litmus' line in the Makefile.
 
 You must patch LITMUS^RT (version 2013.1) to support PGM^RT. Source
 code is available here: http://wiki.litmus-rt.org/litmus/Publications
+
+Publications
+============
+G. Elliott, N. Kim, J. Erickson, C. Liu, and J. Anderson, "Response-Time
+Minimization of Automotive-Inspired Dataflows on Multicore Platforms",
+Proceedings of the 20th IEEE International Conference on Embedded and Real-Time
+Computing Systems and Applications, August 2014 (to appear).
 
 License
 =======

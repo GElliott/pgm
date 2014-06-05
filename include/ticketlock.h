@@ -13,6 +13,8 @@
 #include "litmus.h"
 #endif
 
+#include "atomic.h"
+
 #if ULONG_MAX == 0xffffffffffffffffUL
 typedef unsigned long long ticketdata_t;
 typedef uint32_t ticketid_t;
@@ -45,8 +47,8 @@ static inline void __tl_lock(ticketlock_t* t)
 	ticketlock_t updated = { __sync_fetch_and_add(&t->data, TL_INC) };
 	if(updated.next != updated.owner)
 		while(updated.next != t->owner)
-			asm volatile("pause": : :"memory");
-	asm volatile("mfence": : :"memory");
+			__sync_pause();
+	__sync_synchronize();
 }
 
 static inline void tl_lock(ticketlock_t* t)
@@ -56,7 +58,7 @@ static inline void tl_lock(ticketlock_t* t)
 
 static inline void __tl_unlock(ticketlock_t* t)
 {
-	asm volatile("mfence": : :"memory");
+	__sync_synchronize();
 	__sync_fetch_and_add(&t->owner, (ticketid_t)1);
 }
 
@@ -95,9 +97,9 @@ static inline void tl_lock_np(ticketlock_t* t, unsigned long* flags)
 	asm volatile("cli": : :"memory");
 #elif defined(PGM_NP_LITMUS)
 	/* start non-preemption */
-	asm volatile("mfence": : :"memory");
+	__sync_synchronize();
 	enter_np();
-	asm volatile("mfence": : :"memory");
+	__sync_synchronize();
 #endif
 
 	__tl_lock(t);
@@ -112,9 +114,9 @@ static inline void tl_unlock_np(ticketlock_t* t, unsigned long flags)
 	restore_flags(flags);
 #elif defined(PGM_NP_LITMUS)
 	/* end non-preemption */
-	asm volatile("mfence": : :"memory");
+	__sync_synchronize();
 	exit_np();
-	asm volatile("mfence": : :"memory");
+	__sync_synchronize();
 #endif
 }
 #endif

@@ -541,50 +541,18 @@ int pgm_swap_edge_bufs(void* a, void* b);
  string-based names.
  */
 
-static int pgm_init_graph(graph_t* graph, unsigned int numerical_name)
-{
-	char name[PGM_GRAPH_NAME_LEN];
-	snprintf(name, PGM_GRAPH_NAME_LEN, "%x", numerical_name);
-	return pgm_init_graph(graph, name);
-}
+int pgm_init_graph(graph_t* graph, unsigned int numerical_name);
 
-static int pgm_find_graph(graph_t* graph, unsigned int numerical_name)
-{
-	char name[PGM_GRAPH_NAME_LEN];
-	snprintf(name, PGM_GRAPH_NAME_LEN, "%x", numerical_name);
-	return pgm_find_graph(graph, name);
-}
+int pgm_find_graph(graph_t* graph, unsigned int numerical_name);
 
-static int pgm_init_node(node_t* node, graph_t graph,
-				unsigned int numerical_name)
-{
-	char name[PGM_NODE_NAME_LEN];
-	snprintf(name, PGM_NODE_NAME_LEN, "%x", numerical_name);
-	return pgm_init_node(node, graph, name);
-}
+int pgm_init_node(node_t* node, graph_t graph, unsigned int numerical_name);
 
-static int pgm_find_node(node_t* node, graph_t graph,
-				unsigned int numerical_name)
-{
-	char name[PGM_NODE_NAME_LEN];
-	snprintf(name, PGM_NODE_NAME_LEN, "%x", numerical_name);
-	return pgm_find_node(node, graph, name);
-}
+int pgm_find_node(node_t* node, graph_t graph, unsigned int numerical_name);
 
-static int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer,
-				unsigned int numerical_name,
-				const edge_attr_t* attrs = &default_edge)
-{
-	char name[PGM_EDGE_NAME_LEN];
-	snprintf(name, PGM_EDGE_NAME_LEN, "%x", numerical_name);
-	return pgm_init_edge(edge, producer, consumer, name, attrs);
-}
+int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer,
+	unsigned int numerical_name,
+	const edge_attr_t* attrs = &default_edge);
 
-static int pgm_find_edge(edge_t* edge, node_t producer, node_t consumer,
-				unsigned int numerical_name,
-				edge_attr_t* attrs = NULL)
-{
-	char name[PGM_EDGE_NAME_LEN];
-	snprintf(name, PGM_EDGE_NAME_LEN, "%x", numerical_name);
-	return pgm_find_edge(edge, producer, consumer, name, attrs);
-}
+int pgm_find_edge(edge_t* edge, node_t producer, node_t consumer,
+	unsigned int numerical_name,
+	edge_attr_t* attrs = NULL);

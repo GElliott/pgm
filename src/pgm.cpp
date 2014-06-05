@@ -1848,6 +1848,13 @@ out:
 	return ret;
 }
 
+int pgm_init_graph(graph_t* graph, unsigned int numerical_name)
+{
+	char name[PGM_GRAPH_NAME_LEN];
+	snprintf(name, PGM_GRAPH_NAME_LEN, "%x", numerical_name);
+	return pgm_init_graph(graph, name);
+}
+
 int pgm_init_node(node_t* node, graph_t graph, const char* name)
 {
 	int ret = -1;
@@ -1890,6 +1897,13 @@ out_unlock:
 	pthread_mutex_unlock(&g->lock);
 out:
 	return ret;
+}
+
+int pgm_init_node(node_t* node, graph_t graph, unsigned int numerical_name)
+{
+	char name[PGM_NODE_NAME_LEN];
+	snprintf(name, PGM_NODE_NAME_LEN, "%x", numerical_name);
+	return pgm_init_node(node, graph, name);
 }
 
 int pgm_init_edge(edge_t* edge,
@@ -2005,6 +2019,14 @@ out:
 	return ret;
 }
 
+int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer,
+	unsigned int numerical_name,
+	const edge_attr_t* attrs)
+{
+	char name[PGM_EDGE_NAME_LEN];
+	snprintf(name, PGM_EDGE_NAME_LEN, "%x", numerical_name);
+	return pgm_init_edge(edge, producer, consumer, name, attrs);
+}
 
 ///////////////////////////////////////////////////
 //        Graph/Node/Edge Query Routines         //
@@ -2026,6 +2048,13 @@ int pgm_find_graph(graph_t* graph, const char* graph_name)
 
 out:
 	return ret;
+}
+
+int pgm_find_graph(graph_t* graph, unsigned int numerical_name)
+{
+	char name[PGM_GRAPH_NAME_LEN];
+	snprintf(name, PGM_GRAPH_NAME_LEN, "%x", numerical_name);
+	return pgm_find_graph(graph, name);
 }
 
 int pgm_find_node(node_t* node, graph_t graph, const char* name)
@@ -2057,6 +2086,13 @@ int pgm_find_node(node_t* node, graph_t graph, const char* name)
 
 out:
 	return ret;
+}
+
+int pgm_find_node(node_t* node, graph_t graph, unsigned int numerical_name)
+{
+	char name[PGM_NODE_NAME_LEN];
+	snprintf(name, PGM_NODE_NAME_LEN, "%x", numerical_name);
+	return pgm_find_node(node, graph, name);
 }
 
 int pgm_find_edge(edge_t* edge, node_t producer, node_t consumer,
@@ -2123,6 +2159,15 @@ out_unlock:
 	pthread_mutex_unlock(&g->lock);
 out:
 	return ret;
+}
+
+int pgm_find_edge(edge_t* edge, node_t producer, node_t consumer,
+	unsigned int numerical_name,
+	edge_attr_t* attrs)
+{
+	char name[PGM_EDGE_NAME_LEN];
+	snprintf(name, PGM_EDGE_NAME_LEN, "%x", numerical_name);
+	return pgm_find_edge(edge, producer, consumer, name, attrs);
 }
 
 int pgm_find_first_edge(edge_t* edge, node_t producer, node_t consumer, edge_attr_t *attr)

@@ -22,7 +22,8 @@ LIBPGM = .
 
 # compiler flags
 flags-std      = -std=gnu++11
-flags-optim    = -O2 -march=native
+#flags-optim    = -g -fPIC -march=native
+flags-optim    = -O2 -fPIC -march=native
 flags-debug    = -Wall -Werror -Wno-unused-function -Wno-sign-compare
 flags-api      = -D_XOPEN_SOURCE=600 -D_GNU_SOURCE -pthread
 
@@ -93,7 +94,7 @@ all: ${all}
 
 clean:
 	rm -f ${tools}
-	rm -f *.o *.d *.d.* *.a
+	rm -f *.o *.d *.d.* libpgm.a libpgm.so
 	rm -f tags TAGS cscope.files cscope.out
 
 # Emacs Tags
@@ -115,14 +116,18 @@ cscope:
 # ##############################################################################
 # libpgm
 
-lib: libpgm.a
+#lib: libpgm.a
+lib: libpgm.so
 
 # all .c file in src/ are linked into liblitmus
 vpath %.cpp src/
 obj-lib = $(patsubst src/%.cpp,%.o,$(wildcard src/*.cpp))
 
-libpgm.a: ${obj-lib}
-	${AR} rcs $@ $+
+#libpgm.a: ${obj-lib}
+#	${AR} rcs $@ $+
+
+libpgm.so: ${obj-lib}
+	$(CPP) -fPIC -shared -o $@ $+ -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_system -lboost_thread
 
 
 # ##############################################################################
@@ -159,8 +164,8 @@ lib-depthtest = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_syst
 # Build everything that depends on liblitmus.
 
 .SECONDEXPANSION:
-${tools}: $${obj-$$@} libpgm.a
-	$(CPP) -o $@ $(LDFLAGS) ${ldf-$@} $(filter-out libpgm.a,$+) $(LOADLIBS) $(LDLIBS) ${libpgm-flags} ${lib-$@}
+${tools}: $${obj-$$@} libpgm.so
+	$(CPP) -o $@ $(LDFLAGS) ${ldf-$@} $(filter-out libpgm.so,$+) $(LOADLIBS) $(LDLIBS) ${libpgm-flags} ${lib-$@}
 
 # ##############################################################################
 # Dependency resolution.

@@ -463,6 +463,7 @@ static int fifo_open_consumer(pgm_graph* g,
 		if(edge->fd_in != -1)
 		{
 			edge->buf_in = __pgm_malloc_edge_buf(g, edge, false);
+			ret = 0;
 		}
 		else
 		{

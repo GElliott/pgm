@@ -17,3 +17,7 @@ basictest
 pgmrt
 pingpong
 depthtest
+cvtest
+datapassingtest
+ringtest
+sockstreamtest

@@ -133,6 +133,8 @@ static const edge_attr_t default_edge = {
    Use pgm_init() if nodes are cross-process, or FIFO edges
    are needed. If just FIFO edges are needed and nodes are not
    cross-process, pass "use_shared_mem=0" to pgm_init().
+
+   Return: 0 on success. -1 on error. +1 on already initialized.
 */
 int pgm_init_process_local(void);
 

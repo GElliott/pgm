@@ -92,7 +92,7 @@ do { \
 static string gMemName;
 static __thread bool gIsGraphMaster = false;
 static managed_shared_memory *gGraphSharedMem = 0;
-static struct pgm_graph* gGraphs;
+static struct pgm_graph* gGraphs = 0;
 static path gGraphPath;
 
 ///////////////////////////////////////////////////
@@ -1596,13 +1596,22 @@ out:
 static int prepare_graph_private_mem(void)
 {
 	int ret = -1;
-	gGraphs = new (nothrow) struct pgm_graph[PGM_MAX_GRAPHS];
-	if(gGraphs)
+
+	if (gGraphs == 0)
 	{
-		memset(gGraphs, 0, sizeof(struct pgm_graph)*PGM_MAX_GRAPHS);
-		gIsGraphMaster = true;
-		ret = 0;
+		gGraphs = new (nothrow) struct pgm_graph[PGM_MAX_GRAPHS];
+		if (gGraphs)
+		{
+			memset(gGraphs, 0, sizeof(struct pgm_graph)*PGM_MAX_GRAPHS);
+			gIsGraphMaster = true;
+			ret = 0;
+		}
 	}
+	else
+	{
+		ret = 1; // TODO: establish proper PGM error codes
+	}
+
 	return ret;
 }
 

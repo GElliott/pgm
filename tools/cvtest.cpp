@@ -100,6 +100,7 @@ int main(void)
 	cv_attr.nr_produce = 1;
 	cv_attr.nr_consume = 1;
 	cv_attr.nr_threshold = 1;
+	cv_attr.nr_init = 0;
 
 	CheckError(pgm_init("/tmp/graphs", 1));
 	CheckError(pgm_init_graph(&g, "demo"));

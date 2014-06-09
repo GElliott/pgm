@@ -947,9 +947,17 @@ static const struct pgm_edge_ops pgm_sock_stream_edge_ops =
 
 /************* CV IPC ROUTINES *****************/
 
+static int cv_create(pgm_graph* g,
+				pgm_node* producer, pgm_node* consumer,
+				pgm_edge* edge)
+{
+	edge->nr_pending = edge->attr.nr_init;
+	return 0;
+}
+
 static const struct pgm_edge_ops pgm_cv_edge_ops =
 {
-	.init = dummy_edge_op,
+	.init = cv_create,
 	.open_consumer = dummy_edge_op,
 	.open_producer = dummy_edge_op,
 	.close_consumer = dummy_edge_close,

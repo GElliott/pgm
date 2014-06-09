@@ -93,6 +93,12 @@ typedef struct pgm_edge_attr
 	/* edge-type specific params */
 	union
 	{
+		struct /* CV edge params */
+		{
+			/* Initial token count for consumers. This typically
+			   should be zero, unless you're doing something tricky. */
+			size_t nr_init;
+		};
 		struct /* Ring buffer params */
 		{
 			/* nr_produce/nr_consume interpreted as size of members */

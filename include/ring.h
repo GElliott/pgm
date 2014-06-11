@@ -79,7 +79,7 @@ struct ring
 
    Return: 0 on success. -1 on error.
  */
-static int init_ring(struct ring* r, size_t min_count, size_t size)
+static inline int init_ring(struct ring* r, size_t min_count, size_t size)
 {
 	size_t count;
 
@@ -115,7 +115,7 @@ static int init_ring(struct ring* r, size_t min_count, size_t size)
     1) slot_buf and data_buf have been allocated and are of sufficient size.
     2) 'count' is a power of two.
 */
-static void __init_ring(struct ring* r, size_t count, size_t size,
+static inline void __init_ring(struct ring* r, size_t count, size_t size,
 	char* slot_buf, void* data_buf)
 {
 	r->nmemb = count;
@@ -135,7 +135,7 @@ static void __init_ring(struct ring* r, size_t count, size_t size,
 /*
    Free ring buffer resources.
  */
-static void free_ring(struct ring* r)
+static inline void free_ring(struct ring* r)
 {
 	if (!r)
 		return;
@@ -156,15 +156,16 @@ static inline int is_ring_full(struct ring* r)
 	return (r->nfree == 0);
 }
 
-#if 0
+
 /* multi-writer varients for adding elements to ring buf */
-static inline void* __begin_write_ring(struct ring* r)
+
+static inline void* __begin_mwrite_ring(struct ring* r)
 {
 	ssize_t nfree;
 	size_t idx;
 	void* dst;
 
-	if(*((volatile ssize_t*)(&r->nfree)) <= 0)
+	if(r->nfree <= 0)
 		return NULL;
 
 	nfree = __sync_fetch_and_sub(&r->nfree, 1);
@@ -181,16 +182,15 @@ static inline void* __begin_write_ring(struct ring* r)
 	return (void*)dst;
 }
 
-static inline void __end_ring_write(struct ring* r, void* addr)
+static inline void __end_mwrite_ring(struct ring* r, void* addr)
 {
 	size_t idx = ((char*)addr - r->buf) / r->memb_sz;
 	r->slots[idx] = SLOT_READY;
-	__sync_synchronize();
+	__sync_synchronize(); /* memory barrier */
 }
-#endif
 
 
-/* single-writer varients */
+/* single-writer varients (optimized for single writer) */
 
 static inline void* __begin_write_ring(struct ring* r)
 {
@@ -207,7 +207,7 @@ static inline void* __begin_write_ring(struct ring* r)
 	return (void*)dst;
 }
 
-static inline void __end_ring_write(struct ring* r, void* addr)
+static inline void __end_write_ring(struct ring* r, void* addr)
 {
 	size_t idx = ((char*)addr - r->buf) / r->memb_sz;
 	r->slots[idx] = SLOT_READY;
@@ -266,6 +266,23 @@ static inline void __end_read_ring(struct ring* r, void* addr)
 */
 
 /*
+   Macro for enqueuing an element to the ring buffer,
+   with multi-writer support.
+   [in] r: Pointer to struct ring
+   [in] src: Value to write (not pointer to value!)
+ */
+#define mwrite_ring(r, src) \
+do{ \
+	struct ring* __r = (r); \
+	typeof((src))* __dst; \
+	check_size(__r, __dst); \
+	do { __dst = (typeof(__dst)) __begin_mwrite_ring(__r); } \
+		while (__dst == NULL); \
+	*__dst = (src); \
+	__end_mwrite_ring(__r, __dst); \
+}while(0)
+
+/*
    Macro for enqueuing an element to the ring buffer.
    [in] r: Pointer to struct ring
    [in] src: Value to write (not pointer to value!)
@@ -278,7 +295,7 @@ do{ \
 	do { __dst = (typeof(__dst)) __begin_write_ring(__r); } \
 		while (__dst == NULL); \
 	*__dst = (src); \
-	__end_ring_write(__r, __dst); \
+	__end_write_ring(__r, __dst); \
 }while(0)
 
 /*
@@ -300,6 +317,16 @@ do{ \
 
 /* Write/Read routines for plain vector/array types. These use memcpy. */
 
+#define mwrite_vec_ring(r, src_vec, sz) \
+do{ \
+	struct ring* __r = (r); \
+	void* __dst; \
+	check_size_vec(__r, sz); \
+	do { __dst = __begin_mwrite_ring(__r); } while (__dst == NULL); \
+	memcpy(__dst, src_vec, sz); \
+	__end_mwrite_ring(__r, __dst); \
+}while(0)
+
 #define write_vec_ring(r, src_vec, sz) \
 do{ \
 	struct ring* __r = (r); \
@@ -307,7 +334,7 @@ do{ \
 	check_size_vec(__r, sz); \
 	do { __dst = __begin_write_ring(__r); } while (__dst == NULL); \
 	memcpy(__dst, src_vec, sz); \
-	__end_ring_write(__r, __dst); \
+	__end_write_ring(__r, __dst); \
 }while(0)
 
 #define read_vec_ring(r, dst_vec, sz) \

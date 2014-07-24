@@ -86,7 +86,7 @@ AR  := ${CROSS_COMPILE}${AR}
 # Targets
 
 all     = lib ${tools}
-tools   = cvtest ringtest basictest datapassingtest sockstreamtest pingpong depthtest pgmrt
+tools   = cvtest ringtest basictest datapassingtest sockstreamtest pingpong depthtest pgmrt backedgetest
 
 .PHONY: all lib clean dump-config TAGS tags cscope help
 
@@ -159,6 +159,9 @@ lib-pingpong = -lpthread -lm -lrt -lboost_graph -lboost_system -lboost_thread ${
 
 obj-depthtest = depthtest.o
 lib-depthtest = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_system ${liblitmus-flags}
+
+obj-backedgetest = backedgetest.o
+lib-backedgetest = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_system ${liblitmus-flags}
 
 # ##############################################################################
 # Build everything that depends on liblitmus.

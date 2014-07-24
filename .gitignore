@@ -21,3 +21,4 @@ cvtest
 datapassingtest
 ringtest
 sockstreamtest
+backedgetest

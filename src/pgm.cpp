@@ -11,6 +11,8 @@
 #include <sys/socket.h>
 #include <netdb.h>
 
+#include <sys/syscall.h>
+
 #include <set>
 #include <queue>
 #include <string>
@@ -63,6 +65,12 @@ typedef uint32_t pgm_fd_mask_t;
 #define UNCLAIMED_NODE -1
 
 static __thread char errnostr_buf[80];
+
+static inline pid_t gettid(void)
+{
+	pid_t p = syscall(__NR_gettid);
+	return p;
+}
 
 // Used to report system FAILUREs.
 #define F(fmt, ...) \
@@ -130,10 +138,15 @@ struct pgm_edge
 	int producer;
 	int consumer;
 
+	// flag set if edge is a back-edge
+	int is_backedge;
+
 	// edge type and operations
 	edge_attr_t	attr;
 	struct pgm_edge_ops const* ops;
 
+	// number of skipped edges
+	size_t nr_skips;
 
 	// number of accumulated tokens
 	// (used by signaled edges)
@@ -205,9 +218,15 @@ struct pgm_node
 
 	// number of edges that pass data
 	int nr_in_data;
+	// number of edges signaled using condition variables
 	int nr_in_signaled;
 
-	// bit is set if edge is a singalling edge.
+	// number of data-passing edges that are backedges
+	int nr_in_data_backedges;
+	// number of signal-based edges that are backedges
+	int nr_in_signaled_backedges;
+
+	// bit is set if edge is a singaling edge.
 	pgm_fd_mask_t signal_edge_mask;
 
 	// only used if inbound edges are signal-based
@@ -231,9 +250,9 @@ struct pgm_graph
 	pthread_mutex_t lock;
 
 	int nr_nodes;
-	struct pgm_node nodes[PGM_MAX_NODES];
-
 	int nr_edges;
+
+	struct pgm_node nodes[PGM_MAX_NODES];
 	struct pgm_edge edges[PGM_MAX_EDGES];
 };
 
@@ -1914,9 +1933,10 @@ int pgm_init_node(node_t* node, graph_t graph, unsigned int numerical_name)
 	return pgm_init_node(node, graph, name);
 }
 
-int pgm_init_edge(edge_t* edge,
+static int __pgm_init_edge(edge_t* edge,
 	node_t producer, node_t consumer, const char* name,
-	const edge_attr_t* attr)
+	const edge_attr_t* attr,
+	size_t nr_skips)
 {
 	int ret = -1;
 	struct pgm_graph* g;
@@ -1990,10 +2010,19 @@ int pgm_init_edge(edge_t* edge,
 	{
 		nc->nr_in_signaled++;
 		nc->signal_edge_mask |= ((pgm_fd_mask_t)(1))<<(nc->nr_in);
+
+		if(nr_skips)
+		{
+			nc->nr_in_signaled_backedges++;
+		}
 	}
 	if(is_data_passing(attr))
 	{
 		nc->nr_in_data++;
+		if(nr_skips)
+		{
+			nc->nr_in_data_backedges++;
+		}
 	}
 
 	np->out[np->nr_out++] = edge->edge;
@@ -2005,6 +2034,12 @@ int pgm_init_edge(edge_t* edge,
 	e->producer = producer.node;
 	e->consumer = consumer.node;
 	e->attr = *attr;
+
+	if(nr_skips)
+	{
+		e->is_backedge = true;
+		e->nr_skips = nr_skips;
+	}
 
 	if     (attr->type & __PGM_EDGE_CV)
 		e->ops = &pgm_cv_edge_ops;
@@ -2027,6 +2062,14 @@ out:
 	return ret;
 }
 
+int pgm_init_edge(edge_t* edge,
+	node_t producer, node_t consumer, const char* name,
+	const edge_attr_t* attr)
+{
+	int ret = __pgm_init_edge(edge, producer, consumer, name, attr, 0);
+	return ret;
+}
+
 int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer,
 	unsigned int numerical_name,
 	const edge_attr_t* attrs)
@@ -2034,6 +2077,24 @@ int pgm_init_edge(edge_t* edge, node_t producer, node_t consumer,
 	char name[PGM_EDGE_NAME_LEN];
 	snprintf(name, PGM_EDGE_NAME_LEN, "%x", numerical_name);
 	return pgm_init_edge(edge, producer, consumer, name, attrs);
+}
+
+int pgm_init_backedge(edge_t* edge, size_t nr_skips,
+	node_t producer, node_t consumer, const char* name,
+	const edge_attr_t* attr)
+{
+	int ret = __pgm_init_edge(edge, producer, consumer, name, attr, nr_skips);
+	return ret;
+}
+
+int pgm_init_backedge(edge_t* edge, size_t nr_skips,
+	node_t producer, node_t consumer,
+	unsigned int numerical_name,
+	const edge_attr_t* attrs)
+{
+	char name[PGM_EDGE_NAME_LEN];
+	snprintf(name, PGM_EDGE_NAME_LEN, "%x", numerical_name);
+	return pgm_init_backedge(edge, nr_skips, producer, consumer, name, attrs);
 }
 
 ///////////////////////////////////////////////////
@@ -2247,11 +2308,12 @@ out:
 	return udata;
 }
 
-int pgm_get_successors(node_t node, node_t* successors, int len)
+int pgm_get_successors(node_t node, node_t* successors, int len, int ignore_backedges)
 {
 	int num = -1;
 	struct pgm_graph* g;
 	struct pgm_node* n;
+	node_t* step = successors;
 
 	if(!successors || !is_valid_graph(node.graph))
 		goto out;
@@ -2265,15 +2327,23 @@ int pgm_get_successors(node_t node, node_t* successors, int len)
 		goto out_unlock;
 	num = n->nr_out;
 
-	for(int i = 0; i < num; ++i)
+	for(int i = 0, nr_to_check = num; i < nr_to_check; ++i)
 	{
-		const pgm_node* const _succ = &g->nodes[g->edges[n->out[i]].consumer];
-		node_t succ =
+		if(ignore_backedges && g->edges[n->out[i]].is_backedge)
 		{
-			.graph = node.graph,
-			.node = (int)(_succ - &g->nodes[0])
-		};
-		successors[i] = succ;
+			--num;
+		}
+		else
+		{
+			const pgm_node* const _succ = &g->nodes[g->edges[n->out[i]].consumer];
+			node_t succ =
+			{
+				.graph = node.graph,
+				.node = (int)(_succ - &g->nodes[0])
+			};
+			*step = succ;
+			++step;
+		}
 	}
 out_unlock:
 	pthread_mutex_unlock(&g->lock);
@@ -2281,11 +2351,12 @@ out:
 	return num;
 }
 
-int pgm_get_edges_out(node_t node, edge_t* edges, int len)
+int pgm_get_edges_out(node_t node, edge_t* edges, int len, int ignore_backedges)
 {
 	int num = -1;
 	struct pgm_graph* g;
 	struct pgm_node* n;
+	edge_t* step = edges;
 
 	if(!edges || !is_valid_graph(node.graph))
 		goto out;
@@ -2299,14 +2370,22 @@ int pgm_get_edges_out(node_t node, edge_t* edges, int len)
 		goto out_unlock;
 	num = n->nr_out;
 
-	for(int i = 0; i < num; ++i)
+	for(int i = 0, nr_to_check = num; i < nr_to_check; ++i)
 	{
-		edge_t e =
+		if(ignore_backedges && g->edges[n->out[i]].is_backedge)
 		{
-			.graph = node.graph,
-			.edge = n->out[i]
-		};
-		edges[i] = e;
+			--num;
+		}
+		else
+		{
+			edge_t e =
+			{
+				.graph = node.graph,
+				.edge = n->out[i]
+			};
+			*step = e;
+			++step;
+		}
 	}
 out_unlock:
 	pthread_mutex_unlock(&g->lock);
@@ -2314,11 +2393,12 @@ out:
 	return num;
 }
 
-int pgm_get_predecessors(node_t node, node_t* predecessors, int len)
+int pgm_get_predecessors(node_t node, node_t* predecessors, int len, int ignore_backedges)
 {
 	int num = -1;
 	struct pgm_graph* g;
 	struct pgm_node* n;
+	node_t* step = predecessors;
 
 	if(!predecessors || !is_valid_graph(node.graph))
 		goto out;
@@ -2332,15 +2412,23 @@ int pgm_get_predecessors(node_t node, node_t* predecessors, int len)
 		goto out_unlock;
 	num = n->nr_in;
 
-	for(int i = 0; i < num; ++i)
+	for(int i = 0, nr_to_check = num; i < nr_to_check; ++i)
 	{
-		const pgm_node* const _pred = &g->nodes[g->edges[n->in[i]].producer];
-		node_t pred =
+		if(ignore_backedges && g->edges[n->in[i]].is_backedge)
 		{
-			.graph = node.graph,
-			.node = (int)(_pred - &g->nodes[0])
-		};
-		predecessors[i] = pred;
+			--num;
+		}
+		else
+		{
+			const pgm_node* const _pred = &g->nodes[g->edges[n->in[i]].producer];
+			node_t pred =
+			{
+				.graph = node.graph,
+				.node = (int)(_pred - &g->nodes[0])
+			};
+			*step = pred;
+			++step;
+		}
 	}
 out_unlock:
 	pthread_mutex_unlock(&g->lock);
@@ -2348,11 +2436,12 @@ out:
 	return num;
 }
 
-int pgm_get_edges_in(node_t node, edge_t* edges, int len)
+int pgm_get_edges_in(node_t node, edge_t* edges, int len, int ignore_backedges)
 {
 	int num = -1;
 	struct pgm_graph* g;
 	struct pgm_node* n;
+	edge_t* step = edges;
 
 	if(!edges || !is_valid_graph(node.graph))
 		goto out;
@@ -2366,14 +2455,22 @@ int pgm_get_edges_in(node_t node, edge_t* edges, int len)
 		goto out_unlock;
 	num = n->nr_in;
 
-	for(int i = 0; i < num; ++i)
+	for(int i = 0, nr_to_check = num; i < nr_to_check; ++i)
 	{
-		edge_t e =
+		if(ignore_backedges && g->edges[n->in[i]].is_backedge)
 		{
-			.graph = node.graph,
-			.edge = n->in[i]
-		};
-		edges[i] = e;
+			--num;
+		}
+		else
+		{
+			edge_t e =
+			{
+				.graph = node.graph,
+				.edge = n->in[i]
+			};
+			*step = e;
+			++step;
+		}
 	}
 out_unlock:
 	pthread_mutex_unlock(&g->lock);
@@ -2444,6 +2541,37 @@ out:
 	return ret;
 }
 
+int pgm_is_backedge(edge_t backedge)
+{
+	int is_be = 0;
+	struct pgm_graph* g;
+
+	if(!is_valid_graph(backedge.graph))
+		goto out;
+
+	g = &gGraphs[backedge.graph];
+	is_be = g->edges[backedge.edge].is_backedge;
+
+out:
+	return is_be;
+}
+
+size_t pgn_get_nr_skips_remaining(edge_t backedge)
+{
+	size_t remaining = 0;
+	struct pgm_graph* g;
+
+	if(!is_valid_graph(backedge.graph))
+		goto out;
+
+	g = &gGraphs[backedge.graph];
+	if(g->edges[backedge.edge].is_backedge)
+		remaining = g->edges[backedge.edge].nr_skips;
+
+out:
+	return remaining;
+}
+
 int pgm_get_nr_produce(edge_t edge)
 {
 	int produced = -1;
@@ -2489,7 +2617,7 @@ out:
 	return threshold;
 }
 
-int pgm_get_degree(node_t node)
+int pgm_get_degree(node_t node, int ignore_backedges)
 {
 	int ret = -1;
 	struct pgm_graph* g;
@@ -2502,14 +2630,31 @@ int pgm_get_degree(node_t node)
 	n = &g->nodes[node.node];
 
 	pthread_mutex_lock(&g->lock);
-	ret = n->nr_in + n->nr_out;
+	if(!ignore_backedges)
+	{
+		ret = n->nr_in + n->nr_out;
+	}
+	else
+	{
+		ret = 0;
+		for(int i = 0; i < n->nr_in; ++i)
+		{
+			if(!g->edges[n->in[i]].is_backedge)
+				++ret;
+		}
+		for(int i = 0; i < n->nr_out; ++i)
+		{
+			if(!g->edges[n->out[i]].is_backedge)
+				++ret;
+		}
+	}
 	pthread_mutex_unlock(&g->lock);
 
 out:
 	return ret;
 }
 
-int pgm_get_degree_in(node_t node)
+int pgm_get_degree_in(node_t node, int ignore_backedges)
 {
 	int ret = -1;
 	struct pgm_graph* g;
@@ -2520,15 +2665,28 @@ int pgm_get_degree_in(node_t node)
 
 	g = &gGraphs[node.graph];
 	n = &g->nodes[node.node];
-	__sync_synchronize();
-	ret = n->nr_in;
-	__sync_synchronize();
+
+	pthread_mutex_lock(&g->lock);
+	if(!ignore_backedges)
+	{
+		ret = n->nr_in;
+	}
+	else
+	{
+		ret = 0;
+		for(int i = 0; i < n->nr_in; ++i)
+		{
+			if(!g->edges[n->in[i]].is_backedge)
+				++ret;
+		}
+	}
+	pthread_mutex_unlock(&g->lock);
 
 out:
 	return ret;
 }
 
-int pgm_get_degree_out(node_t node)
+int pgm_get_degree_out(node_t node, int ignore_backedges)
 {
 	int ret = -1;
 	struct pgm_graph* g;
@@ -2539,9 +2697,22 @@ int pgm_get_degree_out(node_t node)
 
 	g = &gGraphs[node.graph];
 	n = &g->nodes[node.node];
-	__sync_synchronize();
-	ret = n->nr_out;
-	__sync_synchronize();
+
+	pthread_mutex_lock(&g->lock);
+	if(!ignore_backedges)
+	{
+		ret = n->nr_out;
+	}
+	else
+	{
+		ret = 0;
+		for(int i = 0; i < n->nr_out; ++i)
+		{
+			if(!g->edges[n->out[i]].is_backedge)
+				++ret;
+		}
+	}
+	pthread_mutex_unlock(&g->lock);
 
 out:
 	return ret;
@@ -2556,7 +2727,8 @@ static int dag_visit(
 	const struct pgm_graph* const g,
 	const struct pgm_node* const n,
 	std::set<std::string>& visited,
-	std::set<std::string>& path)
+	std::set<std::string>& path,
+	int ignore_explicit_backedges)
 {
 	const std::string name(n->name);
 
@@ -2568,6 +2740,11 @@ static int dag_visit(
 
 		for(int i = 0; i < n->nr_out; ++i)
 		{
+			if(ignore_explicit_backedges && g->edges[n->out[i]].is_backedge)
+			{
+				continue;
+			}
+
 			const struct pgm_node* const successor =
 					&(g->nodes[g->edges[n->out[i]].consumer]);
 			const std::string successor_name(successor->name);
@@ -2577,7 +2754,7 @@ static int dag_visit(
 				return 0;
 
 			// visit successor
-			if(!dag_visit(g, successor, visited, path))
+			if(!dag_visit(g, successor, visited, path, ignore_explicit_backedges))
 				return 0;
 		}
 
@@ -2587,7 +2764,7 @@ static int dag_visit(
 	return 1;
 }
 
-int pgm_is_dag(graph_t graph)
+int pgm_is_dag(graph_t graph, int ignore_explicit_backedges)
 {
 	int isDag = 1; // assume true
 	if(!is_valid_graph(graph))
@@ -2608,7 +2785,7 @@ int pgm_is_dag(graph_t graph)
 			if(visited.find(std::string(n->name)) == visited.end())
 			{
 				std::set<std::string> path;
-				isDag = dag_visit(g, n, visited, path);
+				isDag = dag_visit(g, n, visited, path, ignore_explicit_backedges);
 			}
 		}
 	}
@@ -2649,7 +2826,7 @@ double pgm_get_max_depth(node_t target, pgm_weight_func_t wfunc, void* user)
 
 	if(!is_valid_graph(target.graph))
 		goto out;
-	if(!pgm_is_dag(target.graph))
+	if(!pgm_is_dag(target.graph, true))
 		goto out;
 	if(target.node < 0)
 		goto out;
@@ -2668,8 +2845,11 @@ double pgm_get_max_depth(node_t target, pgm_weight_func_t wfunc, void* user)
 		double* weights = new double[g->nr_edges];
 		for(int i = 0; i < g->nr_edges; ++i)
 		{
-			edge_array[i] =
+			if(!g->edges[i].is_backedge)
+			{
+				edge_array[i] =
 					std::make_pair(g->edges[i].producer, g->edges[i].consumer);
+			}
 		}
 		if(wfunc)
 		{
@@ -2722,7 +2902,7 @@ double pgm_get_min_depth(node_t target, pgm_weight_func_t wfunc, void* user)
 
 	if(!is_valid_graph(target.graph))
 		goto out;
-	if(!pgm_is_dag(target.graph))
+	if(!pgm_is_dag(target.graph, true))
 		goto out;
 	if(target.node < 0)
 		goto out;
@@ -2741,8 +2921,11 @@ double pgm_get_min_depth(node_t target, pgm_weight_func_t wfunc, void* user)
 		double* weights = new double[g->nr_edges];
 		for(int i = 0; i < g->nr_edges; ++i)
 		{
-			edge_array[i] =
+			if(!g->edges[i].is_backedge)
+			{
+				edge_array[i] =
 					std::make_pair(g->edges[i].producer, g->edges[i].consumer);
+			}
 		}
 		if(wfunc)
 		{
@@ -2842,7 +3025,8 @@ int pgm_claim_node(node_t node, pid_t tid)
 			pthread_mutex_unlock(&g->lock);
 			goto out;
 		}
-		n->owner = tid;
+
+		n->owner = (tid == 0) ? gettid() : tid;
 	}
 	pthread_mutex_unlock(&g->lock);
 
@@ -2874,7 +3058,7 @@ int pgm_claim_any_node(graph_t graph, node_t* node, pid_t tid)
 			{
 				node_id = i;
 				n = &g->nodes[i];
-				n->owner = tid;
+				n->owner = (tid == 0) ? gettid() : tid;
 				break;
 			}
 		}
@@ -2907,6 +3091,11 @@ int pgm_release_node(node_t node, pid_t tid)
 
 	g = &gGraphs[node.graph];
 	n = &g->nodes[node.node];
+
+	if(tid == 0)
+	{
+		tid = gettid();
+	}
 
 	pthread_mutex_lock(&g->lock);
 
@@ -2966,8 +3155,11 @@ static int pgm_nr_ready_edges(struct pgm_graph* g, struct pgm_node* n)
 	for(int i = 0; i < n->nr_in; ++i)
 	{
 		struct pgm_edge* e = &g->edges[n->in[i]];
-		if(is_signal_driven(e) && (e->nr_pending >= e->attr.nr_threshold))
+		if(is_signal_driven(e) &&
+		   ((e->nr_pending >= e->attr.nr_threshold) || (e->nr_skips > 0)))
+		{
 			++nr_ready;
+		}
 	}
 	return nr_ready;
 }
@@ -2985,7 +3177,9 @@ static eWaitStatus pgm_wait_for_tokens(struct pgm_graph* g, struct pgm_node* n)
 
 	// We're out of tokens to consume.
 	// Have we been signaled to exit?
-	if(nr_ready == 0 && n->nr_terminate_signals == n->nr_in_signaled)
+	if(nr_ready == 0 &&
+	   n->nr_terminate_signals != 0 &&
+	   n->nr_terminate_signals == (n->nr_in_signaled - n->nr_in_signaled_backedges))
 	{
 		wait_status = WaitExhaustedAndTerminate;
 		goto out;
@@ -2999,7 +3193,9 @@ static eWaitStatus pgm_wait_for_tokens(struct pgm_graph* g, struct pgm_node* n)
 		nr_ready = pgm_nr_ready_edges(g, n);
 		if(nr_ready == n->nr_in_signaled)
 			break;
-		if(nr_ready == 0 && n->nr_terminate_signals == n->nr_in_signaled)
+		if(nr_ready == 0 &&
+		   n->nr_terminate_signals != 0 &&
+		   n->nr_terminate_signals == (n->nr_in_signaled - n->nr_in_signaled_backedges))
 		{
 			wait_status = WaitExhaustedAndTerminate;
 			break;
@@ -3013,13 +3209,27 @@ out:
 	return wait_status;
 }
 
+static void pgm_consume_skips(struct pgm_graph* g, struct pgm_node* n)
+{
+	for(int i = 0; i < n->nr_in; ++i)
+	{
+		struct pgm_edge* e = &g->edges[n->in[i]];
+		if(e->nr_skips > 0)
+		{
+			e->nr_skips--;
+		}
+	}
+}
+
 static void pgm_consume_tokens(struct pgm_graph* g, struct pgm_node* n)
 {
 	for(int i = 0; i < n->nr_in; ++i)
 	{
 		struct pgm_edge* e = &g->edges[n->in[i]];
-		if(is_signal_driven(e))
+		if(is_signal_driven(e) && !(e->nr_skips))
+		{
 			__sync_fetch_and_sub(&e->nr_pending, e->attr.nr_consume);
+		}
 	}
 }
 
@@ -3166,6 +3376,7 @@ static eWaitStatus pgm_recv_data(struct pgm_graph* g, struct pgm_node* n)
 
 	eWaitStatus wait_status = WaitSuccess;
 	pgm_fd_mask_t to_wait;
+	pgm_fd_mask_t to_skip = 0;
 
 	// Each element points to where data needs to be copied.
 	// Reads for each edge do not always read all the needed
@@ -3177,15 +3388,28 @@ static eWaitStatus pgm_recv_data(struct pgm_graph* g, struct pgm_node* n)
 	{
 		struct pgm_edge* e = &g->edges[n->in[i]];
 		if(!is_data_passing(e))
+		{
 			continue;
+		}
+		if(e->nr_skips > 0)
+		{
+			to_skip |= ((pgm_fd_mask_t)0x1)<<i;
+			continue;
+		}
 		// initialize to the start of the input edge buffer
 		dest_ptrs[i] = (char*)pgm_get_user_ptr(e->buf_in);
 	}
 
-	// create a bitmask for each edge to wait upon (brainfart. easier way?)
+	// create a bitmask for each edge to wait upon...
 	to_wait = ~((pgm_fd_mask_t)0) >> (sizeof(to_wait)*8 - n->nr_in);
-	// ...but mask out the signal-driven edges
-	to_wait &= ~(n->signal_edge_mask);
+
+	// (don't read anything if we're skipping all the edges)
+	if(to_wait == to_skip)
+		goto out;
+
+	// ...but mask out the signal-driven edges and edges we're skipping
+	to_wait &= ~(n->signal_edge_mask | to_skip);
+
 
 wait_for_data: // jump here if we would block on read
 	while(to_wait)
@@ -3218,6 +3442,8 @@ wait_for_data: // jump here if we would block on read
 
 		// skip over non-data-passing edges
 		if(!is_data_passing(e))
+			continue;
+		if(e->nr_skips > 0)
 			continue;
 
 		if(e->attr.type & __PGM_EDGE_RING)
@@ -3330,10 +3556,12 @@ read_more: // jump to here if we need to read more bytes into our buffer
 
 			// recompute a mask for this edge and all after i.
 			to_wait = ~((pgm_fd_mask_t)0) >> (sizeof(to_wait)*8 - (i + 1));
-			// ...but mask out signal-driven edges
-			to_wait &= ~(n->signal_edge_mask);
+			// ...but mask out signal-driven edges and edge's we're skipping
+			to_wait &= ~(n->signal_edge_mask | to_skip);
 			// ...but still make sure that we wait for this edge,
-			// even if it's a singalled one.
+			// even if it's a singalled one (we can't be reading an edge
+			// that we're skipping since we would have skipped it and
+			// there would have been no failure).
 			to_wait |= ((pgm_fd_mask_t)1)<<i;
 
 			goto wait_for_data;
@@ -3350,7 +3578,8 @@ read_more: // jump to here if we need to read more bytes into our buffer
 
 out:
 	// signal terminte if everyone has checked in
-	if(n->nr_terminate_msgs == n->nr_in_data)
+	if(n->nr_terminate_msgs &&
+	   (n->nr_terminate_msgs == (n->nr_in_data - n->nr_in_data_backedges)))
 		wait_status = WaitExhaustedAndTerminate;
 
 	return wait_status;
@@ -3371,7 +3600,9 @@ int pgm_wait(node_t node)
 
 	// wait to be signaled before attempting to read
 	if(n->nr_in_signaled)
+	{
 		token_status = pgm_wait_for_tokens(g, n);
+	}
 	if(n->nr_in_data)
 	{
 		data_status = pgm_recv_data(g, n);
@@ -3391,6 +3622,8 @@ int pgm_wait(node_t node)
 
 	if(n->nr_in_signaled && ret != PGM_TERMINATE)
 		pgm_consume_tokens(g, n);  // consume the token counters
+
+	pgm_consume_skips(g, n); // decrement skip counts
 
 	if(ret == PGM_TERMINATE)
 		pgm_terminate(node);
@@ -3415,6 +3648,11 @@ static int pgm_produce(node_t node, pgm_command_t command = PGM_NORMAL)
 	for(int i = 0; i < n->nr_out; ++i)
 	{
 		e = &g->edges[n->out[i]];
+
+		// terminate messages are not sent over backedges
+		if((command & PGM_TERMINATE) && e->is_backedge)
+			continue;
+
 		if(is_data_passing(e))
 		{
 			ret = pgm_send_data(e, command);

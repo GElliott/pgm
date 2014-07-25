@@ -1392,6 +1392,7 @@ out:
 	#ifdef PGM_SHARED
 		pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
 	#endif
+		pthread_mutexattr_setprotocol(&attr, PTHREAD_PRIO_INHERIT);
 		pthread_mutex_init(l, &attr);
 		pthread_mutexattr_destroy(&attr);
 	}
@@ -1768,6 +1769,7 @@ static int prepare_graph(graph_t* graph, const char* graph_name)
 #ifdef PGM_SHARED
 	pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
 #endif
+	pthread_mutexattr_setprotocol(&attr, PTHREAD_PRIO_INHERIT);
 	pthread_mutex_init(&g->lock, &attr);
 	pthread_mutexattr_destroy(&attr);
 

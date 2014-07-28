@@ -403,6 +403,36 @@ int pgm_get_nr_consume(edge_t edge);
 int pgm_get_nr_threshold(edge_t edge);
 
 /*
+   Query to see if 'query' is an ancestor of 'node'.
+     [in] node:  possible decendent of 'query'
+     [in] query: possible ancestor of 'node'
+   Return:
+     1 if 'query' is an ancestor of 'node'.
+     0 if 'query' is NOT an ancestor of 'node'.
+	-1 if 'query' or 'node' is an invalid node, or
+       if 'query' and 'node' are from different graphs, or
+       if 'query' == 'node'
+
+   Note: pgm_is_ancestor(n, q) === pgm_is_descendant(q, n)
+ */
+int pgm_is_ancestor(node_t node, node_t query);
+
+/*
+   Query to see if 'query' is a decendant of 'node'.
+     [in] node:  possible ancestor of 'query'
+     [in] query: possible decendent of 'node'
+   Return:
+     1 if 'query' is an decendent of 'node'.
+     0 if 'query' is NOT an decendent of 'node'.
+	-1 if 'query' or 'node' is an invalid node, or
+       if 'query' and 'node' are from different graphs, or
+       if 'query' == 'node'
+
+   Note: pgm_is_ancestor(n, q) === pgm_is_descendant(q, n)
+ */
+int pgm_is_descendant(node_t node, node_t query);
+
+/*
    Check if a graph is a acyclic.
      [in] graph: Graph descriptor
 	 [in] ignore_explicit_backedges: Ignore edges that were added

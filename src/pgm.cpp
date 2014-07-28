@@ -2720,6 +2720,73 @@ out:
 	return ret;
 }
 
+static int is_ancestor(const struct pgm_graph* g,
+	const struct pgm_node* n, const struct pgm_node* q,
+	std::set<int>& visited)
+{
+	if(n == q)
+		return 1;
+
+	const int degree = n->nr_in;
+	if(degree == 0)
+		return 0;
+
+	int is_pred = 0;
+
+	// depth-first search to see if q is a predecessor of n.
+	for(int i = 0; i < degree && !is_pred; ++i)
+	{
+		if(g->edges[n->in[i]].is_backedge)
+			continue; // skip backeges
+
+		int parent_idx = g->edges[n->in[i]].producer;
+		if(visited.find(parent_idx) == visited.end())
+		{
+			visited.insert(parent_idx);
+
+			const struct pgm_node* parent = &g->nodes[parent_idx];
+			is_pred = is_ancestor(g, parent, q, visited);
+		}
+	}
+
+	return is_pred;
+}
+
+int pgm_is_ancestor(node_t node, node_t query)
+{
+	int ret = -1;
+	struct pgm_graph* g;
+	struct pgm_node* n;
+	struct pgm_node* q;
+
+	if(node.graph != query.graph)
+		goto out;
+	if(node.node == query.node)
+		goto out;
+	if(!is_valid_graph(node.graph))
+		goto out;
+
+	g = &gGraphs[node.graph];
+	n = &g->nodes[node.node];
+	q = &g->nodes[query.node];
+
+	{
+		std::set<int> visited;
+
+		pthread_mutex_lock(&g->lock);
+		ret = is_ancestor(g, n, q, visited);
+		pthread_mutex_unlock(&g->lock);
+	}
+
+out:
+	return ret;
+
+}
+
+int pgm_is_descendant(node_t n, node_t query)
+{
+	return pgm_is_ancestor(query, n);
+}
 
 ///////////////////////////////////////////////////
 //           Graph Validation Routines           //

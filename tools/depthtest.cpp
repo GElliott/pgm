@@ -5,16 +5,23 @@
 
 #include <iostream>
 #include <map>
-
+#include <errno.h>
+#include <string.h>
 #include <pthread.h>
 
 #include "pgm.h"
 
+int errors = 0;
+__thread char __errstr[80] = {0};
+
 #define CheckError(e) \
-if(e < 0) { \
-	fprintf(stderr, "Error %d @ %s:%s:%d\n",  \
-		e, __FILE__, __FUNCTION__, __LINE__); \
-}
+do { int __ret = (e); \
+if(__ret < 0) { \
+	errors++; \
+	char* errstr = strerror_r(errno, __errstr, sizeof(errstr)); \
+	fprintf(stderr, "%lu: Error %d (%s (%d)) @ %s:%s:%d\n",  \
+		pthread_self(), __ret, errstr, errno, __FILE__, __FUNCTION__, __LINE__); \
+}}while(0)
 
 struct edge_compare
 {

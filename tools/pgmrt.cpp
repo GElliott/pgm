@@ -12,6 +12,9 @@
 #include <cassert>
 #include <cstdint>
 
+#include <errno.h>
+#include <string.h>
+
 // TODO: Use std::chrono routines instead.
 #include <sys/time.h>
 
@@ -51,14 +54,17 @@ inline pid_t gettid(void)
 
 using namespace boost;
 
+int errors = 0;
+__thread char __errstr[80] = {0};
+
 #define CheckError(e) \
-do { \
-	int errcode = (e); \
-	if(errcode < 0) { \
-		fprintf(stderr, "Error %d @ %s:%s:%d\n",  \
-			errcode, __FILE__, __FUNCTION__, __LINE__); \
-	} \
-} while(0)
+do { int __ret = (e); \
+if(__ret < 0) { \
+	errors++; \
+	char* errstr = strerror_r(errno, __errstr, sizeof(errstr)); \
+	fprintf(stderr, "%lu: Error %d (%s (%d)) @ %s:%s:%d\n",  \
+		pthread_self(), __ret, errstr, errno, __FILE__, __FUNCTION__, __LINE__); \
+}}while(0)
 
 // macro to boost priority of tasks waiting for tokens
 // when compiled for Litmus.

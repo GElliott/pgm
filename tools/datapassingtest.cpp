@@ -17,12 +17,13 @@ pthread_barrier_t init_barrier;
 __thread char __errstr[80] = {0};
 
 #define CheckError(e) \
-if(e < 0) { \
+do { int __ret = (e); \
+if(__ret < 0) { \
 	errors++; \
 	char* errstr = strerror_r(errno, __errstr, sizeof(errstr)); \
 	fprintf(stderr, "%lu: Error %d (%s (%d)) @ %s:%s:%d\n",  \
-		pthread_self(), e, errstr, errno, __FILE__, __FUNCTION__, __LINE__); \
-}
+		pthread_self(), __ret, errstr, errno, __FILE__, __FUNCTION__, __LINE__); \
+}}while(0)
 
 int TOTAL_ITERATIONS = 4*1000;
 

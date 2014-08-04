@@ -410,8 +410,7 @@ int pgm_get_nr_threshold(edge_t edge);
      1 if 'query' is an ancestor of 'node'.
      0 if 'query' is NOT an ancestor of 'node'.
 	-1 if 'query' or 'node' is an invalid node, or
-       if 'query' and 'node' are from different graphs, or
-       if 'query' == 'node'
+       if 'query' and 'node' are from different graphs
 
    Note: pgm_is_ancestor(n, q) === pgm_is_descendant(q, n)
  */
@@ -425,8 +424,7 @@ int pgm_is_ancestor(node_t node, node_t query);
      1 if 'query' is an decendent of 'node'.
      0 if 'query' is NOT an decendent of 'node'.
 	-1 if 'query' or 'node' is an invalid node, or
-       if 'query' and 'node' are from different graphs, or
-       if 'query' == 'node'
+       if 'query' and 'node' are from different graphs
 
    Note: pgm_is_ancestor(n, q) === pgm_is_descendant(q, n)
  */

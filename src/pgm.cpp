@@ -139,7 +139,7 @@ struct pgm_edge
 	int consumer;
 
 	// flag set if edge is a back-edge
-	int is_backedge;
+	bool is_backedge;
 
 	// edge type and operations
 	edge_attr_t	attr;
@@ -229,17 +229,20 @@ struct pgm_node
 	// bit is set if edge is a singaling edge.
 	pgm_fd_mask_t signal_edge_mask;
 
-	// only used if inbound edges are signal-based
-	pgm_lock_t	lock;
-	pgm_cv_t	wait;
-
 	// number of termination signals received
 	int nr_terminate_signals;
 	int nr_terminate_msgs;
 
+	// Linux thread ID of thread claiming ownership
 	pid_t owner;
 
+	// Pointer to user-attached user data
 	void* userdata;
+
+	// only used if inbound edges are signal-based
+	pgm_lock_t	lock;
+	pgm_cv_t	wait;
+
 };
 
 struct pgm_graph
@@ -1938,7 +1941,7 @@ int pgm_init_node(node_t* node, graph_t graph, unsigned int numerical_name)
 static int __pgm_init_edge(edge_t* edge,
 	node_t producer, node_t consumer, const char* name,
 	const edge_attr_t* attr,
-	size_t nr_skips)
+	bool is_backedge, size_t nr_skips)
 {
 	int ret = -1;
 	struct pgm_graph* g;
@@ -2013,7 +2016,7 @@ static int __pgm_init_edge(edge_t* edge,
 		nc->nr_in_signaled++;
 		nc->signal_edge_mask |= ((pgm_fd_mask_t)(1))<<(nc->nr_in);
 
-		if(nr_skips)
+		if(is_backedge)
 		{
 			nc->nr_in_signaled_backedges++;
 		}
@@ -2021,7 +2024,7 @@ static int __pgm_init_edge(edge_t* edge,
 	if(is_data_passing(attr))
 	{
 		nc->nr_in_data++;
-		if(nr_skips)
+		if(is_backedge)
 		{
 			nc->nr_in_data_backedges++;
 		}
@@ -2037,7 +2040,7 @@ static int __pgm_init_edge(edge_t* edge,
 	e->consumer = consumer.node;
 	e->attr = *attr;
 
-	if(nr_skips)
+	if(is_backedge)
 	{
 		e->is_backedge = true;
 		e->nr_skips = nr_skips;
@@ -2068,7 +2071,7 @@ int pgm_init_edge(edge_t* edge,
 	node_t producer, node_t consumer, const char* name,
 	const edge_attr_t* attr)
 {
-	int ret = __pgm_init_edge(edge, producer, consumer, name, attr, 0);
+	int ret = __pgm_init_edge(edge, producer, consumer, name, attr, false, 0);
 	return ret;
 }
 
@@ -2085,7 +2088,7 @@ int pgm_init_backedge(edge_t* edge, size_t nr_skips,
 	node_t producer, node_t consumer, const char* name,
 	const edge_attr_t* attr)
 {
-	int ret = __pgm_init_edge(edge, producer, consumer, name, attr, nr_skips);
+	int ret = __pgm_init_edge(edge, producer, consumer, name, attr, true, nr_skips);
 	return ret;
 }
 
@@ -2761,11 +2764,13 @@ int pgm_is_ancestor(node_t node, node_t query)
 
 	if(node.graph != query.graph)
 		goto out;
-	if(node.node == query.node)
-		goto out;
 	if(!is_valid_graph(node.graph))
 		goto out;
-
+	if(node.node == query.node)
+	{
+		ret = 0;
+		goto out;
+	}
 	g = &gGraphs[node.graph];
 	n = &g->nodes[node.node];
 	q = &g->nodes[query.node];
@@ -3233,20 +3238,39 @@ static int pgm_nr_ready_edges(struct pgm_graph* g, struct pgm_node* n)
 	return nr_ready;
 }
 
+static void pgm_nr_ready_edges(struct pgm_graph* g, struct pgm_node* n, int& nr_ready, int& nr_ready_normal)
+{
+	nr_ready = 0;
+	nr_ready_normal = 0;
+	for(int i = 0; i < n->nr_in; ++i)
+	{
+		struct pgm_edge* e = &g->edges[n->in[i]];
+		if(is_signal_driven(e) &&
+		   ((e->nr_pending >= e->attr.nr_threshold) || (e->nr_skips > 0)))
+		{
+			++nr_ready;
+			if(!e->is_backedge)
+			{
+				++nr_ready_normal;
+			}
+		}
+	}
+}
+
 static eWaitStatus pgm_wait_for_tokens(struct pgm_graph* g, struct pgm_node* n)
 {
-	int nr_ready;
+	int nr_ready, nr_ready_normal;
 	unsigned long flags;
 	eWaitStatus wait_status = WaitSuccess;
 
 	// quick-path
-	nr_ready = pgm_nr_ready_edges(g, n);
+	pgm_nr_ready_edges(g, n, nr_ready, nr_ready_normal);
 	if(nr_ready == n->nr_in_signaled)
 		goto out;
 
-	// We're out of tokens to consume.
-	// Have we been signaled to exit?
-	if(nr_ready == 0 &&
+	// Have we been signaled to exit, and
+	// and we're out of tokens to consume?
+	if(nr_ready_normal == 0 &&
 	   n->nr_terminate_signals != 0 &&
 	   n->nr_terminate_signals == (n->nr_in_signaled - n->nr_in_signaled_backedges))
 	{
@@ -3259,10 +3283,10 @@ static eWaitStatus pgm_wait_for_tokens(struct pgm_graph* g, struct pgm_node* n)
 	do
 	{
 		// recheck the condition
-		nr_ready = pgm_nr_ready_edges(g, n);
+		pgm_nr_ready_edges(g, n, nr_ready, nr_ready_normal);
 		if(nr_ready == n->nr_in_signaled)
 			break;
-		if(nr_ready == 0 &&
+		if(nr_ready_normal == 0 &&
 		   n->nr_terminate_signals != 0 &&
 		   n->nr_terminate_signals == (n->nr_in_signaled - n->nr_in_signaled_backedges))
 		{

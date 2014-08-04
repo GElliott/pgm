@@ -58,8 +58,8 @@ int main(void)
 	CheckError(pgm_init_edge(&e4_5, n4, n5, "e4_5"));
 	CheckError(pgm_init_backedge(&be5_0, 1, n5, n0, "be5_0"));
 
-	// check error case
-	CheckReturn(pgm_is_ancestor(n0, n0), -1);
+	// check self case
+	CheckReturn(pgm_is_ancestor(n0, n0), 0);
 
 	// all ancestors of the root?
 	CheckReturn(pgm_is_ancestor(n1, n0), 1);

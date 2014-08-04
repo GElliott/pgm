@@ -12,6 +12,10 @@
  */
 #ifndef _USE_LITMUS
 	#define PGM_SYNC_METHOD		0
+/* You must define PGM_ALLOW_P_SPIN if
+   preemptions remain enabled.
+ */
+/*	#define PGM_SYNC_METHOD		1 */
 #else
 	/* Default to PGM spinlocks under Litmus */
 	#define	PGM_SYNC_METHOD		1
@@ -32,6 +36,8 @@
  */
 #ifndef _USE_LITMUS
 	#define PGM_NP_METHOD		0
+/* Uncomment to allow preemptive spinning sync */
+/*	#define PGM_ALLOW_P_SPIN */
 #else
 	/* Default to Litmus NP sections. */
 	#define PGM_NP_METHOD		2
@@ -54,7 +60,7 @@
 #error "Cannot disable interrupts using pthread synchronization."
 #endif
 
-#if (PGM_SYNC_METHOD == 1) && (PGM_NP_METHOD == 0)
+#if (PGM_SYNC_METHOD == 1) && (PGM_NP_METHOD == 0) && !defined(PGM_ALLOW_P_SPIN)
 #error "Spinlocks are unsafe without non-preemption."
 #endif
 

@@ -3807,10 +3807,24 @@ static const char* edgeTypeStr(const struct pgm_edge* e)
 	return "unknown";
 }
 
+static void filter_ctrlchars(char* str, size_t len)
+{
+	for(size_t i = 0; i < len && str[i] != '\0'; ++i)
+	{
+		if(iscntrl(str[i]))
+		{
+			str[i] = '\0';
+			break;
+		}
+	}
+}
+
 int pgm_print_graph(graph_t graph, FILE* outs)
 {
 	int ret = -1;
 	struct pgm_graph* g;
+
+	char namebuf[PGM_NODE_NAME_LEN];
 
 	if(!is_valid_graph(graph))
 		goto out;
@@ -3819,12 +3833,15 @@ int pgm_print_graph(graph_t graph, FILE* outs)
 
 	pthread_mutex_lock(&g->lock);
 
+	strncpy(namebuf, g->name, PGM_NODE_NAME_LEN);
+	filter_ctrlchars(namebuf, PGM_NODE_NAME_LEN);
+
 	fprintf(outs,
 		"digraph G {\n"
 		"\trankdir=TB;\n"
 		"\tsize=\"11,8.5\";\n"
 		"\tlabel=\"%s\";\n",
-		g->name);
+		namebuf);
 
 	for(int i = 0; i < g->nr_nodes; ++i)
 	{
@@ -3852,28 +3869,34 @@ int pgm_print_graph(graph_t graph, FILE* outs)
 		bool isSrc = (degreeIn == 0);
 		bool isSink = (degreeOut == 0);
 
+		strncpy(namebuf, n->name, PGM_NODE_NAME_LEN);
+		filter_ctrlchars(namebuf, PGM_NODE_NAME_LEN);
+
 		fprintf(outs,
 			"\t%d [shape=%s, style=%s, color=%s, label=\"%s\"];\n",
 			i,
 			(isSrc || isSink) ? "doublecircle" : "circle",
 			(isSrc || isSink) ? "filled" : "\"\"",
 			(isSrc) ? "\"#56A0D3\"" : (isSink) ? "\"#E04050D3\"" : "\"\"",
-			n->name);
+			namebuf);
 	}
 
 	for(int i = 0; i < g->nr_edges; ++i)
 	{
 		const struct pgm_edge* e = &g->edges[i];
 
+		strncpy(namebuf, e->name, PGM_NODE_NAME_LEN);
+		filter_ctrlchars(namebuf, PGM_NODE_NAME_LEN);
+
 		fprintf(outs,
 			"\t%d -> %d [style=%s, color=%s, label=\"%s%s_%s\", headlabel=\"%lu (%lu)\", taillabel=\"%lu\"]\n",
 			e->producer,
 			e->consumer,
 			(!e->is_backedge) ? "solid" : "dashed",
-			(is_data_passing(e)) ? "blue" : "green",
+			(is_data_passing(e)) ? "blue" : "dimgray",
 			(is_signal_driven(e) && e->ops != &pgm_cv_edge_ops) ? "fast_" : "",
 			edgeTypeStr(e),
-			e->name,
+			namebuf,
 			e->attr.nr_consume,
 			e->attr.nr_threshold,
 			e->attr.nr_produce);

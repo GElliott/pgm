@@ -3825,6 +3825,7 @@ int pgm_print_graph(graph_t graph, FILE* outs)
 	struct pgm_graph* g;
 
 	char namebuf[PGM_NODE_NAME_LEN];
+	char thresh[80];
 
 	if(!is_valid_graph(graph))
 		goto out;
@@ -3888,8 +3889,17 @@ int pgm_print_graph(graph_t graph, FILE* outs)
 		strncpy(namebuf, e->name, PGM_NODE_NAME_LEN);
 		filter_ctrlchars(namebuf, PGM_NODE_NAME_LEN);
 
+		if(!e->is_backedge)
+		{
+			snprintf(thresh, sizeof(thresh), "(%lu)", e->attr.nr_threshold);
+		}
+		else
+		{
+			snprintf(thresh, sizeof(thresh), "(%lu, %lu)", e->attr.nr_threshold, e->nr_skips);
+		}
+
 		fprintf(outs,
-			"\t%d -> %d [style=%s, color=%s, label=\"%s%s_%s\", headlabel=\"%lu (%lu)\", taillabel=\"%lu\"]\n",
+			"\t%d -> %d [style=%s, color=%s, label=\"%s%s_%s\", headlabel=\"%lu %s\", taillabel=\"%lu\"]\n",
 			e->producer,
 			e->consumer,
 			(!e->is_backedge) ? "solid" : "dashed",
@@ -3898,7 +3908,7 @@ int pgm_print_graph(graph_t graph, FILE* outs)
 			edgeTypeStr(e),
 			namebuf,
 			e->attr.nr_consume,
-			e->attr.nr_threshold,
+			thresh,
 			e->attr.nr_produce);
 	}
 
@@ -3910,5 +3920,4 @@ int pgm_print_graph(graph_t graph, FILE* outs)
 
 out:
 	return ret;
-
 }

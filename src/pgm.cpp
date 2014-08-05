@@ -3791,3 +3791,101 @@ int pgm_terminate(node_t node)
 {
 	return pgm_produce(node, PGM_TERMINATE);
 }
+
+static const char* edgeTypeStr(const struct pgm_edge* e)
+{
+	if(e->ops == &pgm_ring_edge_ops)
+		return "ring";
+	if(e->ops == &pgm_fifo_edge_ops)
+		return "fifo";
+	if(e->ops == &pgm_mq_edge_ops)
+		return "mq";
+	if(e->ops == &pgm_sock_stream_edge_ops)
+		return "stream";
+	if(e->ops == &pgm_cv_edge_ops)
+		return "cv";
+	return "unknown";
+}
+
+int pgm_print_graph(graph_t graph, FILE* outs)
+{
+	int ret = -1;
+	struct pgm_graph* g;
+
+	if(!is_valid_graph(graph))
+		goto out;
+
+	g = &gGraphs[graph];
+
+	pthread_mutex_lock(&g->lock);
+
+	fprintf(outs,
+		"digraph G {\n"
+		"\trankdir=TB;\n"
+		"\tsize=\"11,8.5\";\n"
+		"\tlabel=\"%s\";\n",
+		g->name);
+
+	for(int i = 0; i < g->nr_nodes; ++i)
+	{
+		const struct pgm_node* n = &g->nodes[i];
+
+		int degreeIn = 0;
+		int degreeOut = 0;
+
+		for(int j = 0; j < n->nr_in; ++j)
+		{
+			if(!g->edges[n->in[j]].is_backedge)
+			{
+				++degreeIn;
+			}
+		}
+
+		for(int j = 0; j < n->nr_out; ++j)
+		{
+			if(!g->edges[n->out[j]].is_backedge)
+			{
+				++degreeOut;
+			}
+		}
+
+		bool isSrc = (degreeIn == 0);
+		bool isSink = (degreeOut == 0);
+
+		fprintf(outs,
+			"\t%d [shape=%s, style=%s, color=%s, label=\"%s\"];\n",
+			i,
+			(isSrc || isSink) ? "doublecircle" : "circle",
+			(isSrc || isSink) ? "filled" : "\"\"",
+			(isSrc) ? "\"#56A0D3\"" : (isSink) ? "\"#E04050D3\"" : "\"\"",
+			n->name);
+	}
+
+	for(int i = 0; i < g->nr_edges; ++i)
+	{
+		const struct pgm_edge* e = &g->edges[i];
+
+		fprintf(outs,
+			"\t%d -> %d [style=%s, color=%s, label=\"%s%s_%s\", headlabel=\"%lu (%lu)\", taillabel=\"%lu\"]\n",
+			e->producer,
+			e->consumer,
+			(!e->is_backedge) ? "solid" : "dashed",
+			(is_data_passing(e)) ? "blue" : "green",
+			(is_signal_driven(e) && e->ops != &pgm_cv_edge_ops) ? "fast_" : "",
+			edgeTypeStr(e),
+			e->name,
+			e->attr.nr_consume,
+			e->attr.nr_threshold,
+			e->attr.nr_produce);
+	}
+
+	fprintf(outs, "}\n");
+
+	pthread_mutex_unlock(&g->lock);
+
+	ret = 0;
+
+out:
+	return ret;
+
+}

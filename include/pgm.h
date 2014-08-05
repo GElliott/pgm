@@ -175,6 +175,14 @@ int pgm_destroy();
 int pgm_init_graph(graph_t* graph, const char* graph_name);
 
 /*
+   Prints the graph in dot format to the provided file descriptor.
+     [in] graph: Graph
+	 [in] file: File descriptor
+   Return: 0 on success. -1 on error.
+ */
+int pgm_print_graph(graph_t graph, FILE* out);
+
+/*
    Destroy a graph.
      [in] graph: Graph
    Return: 0 on success. -1 on error.
@@ -603,7 +611,6 @@ void* pgm_swap_edge_buf_c(edge_t edge, void* buf);
    Return: 0 on success. -1 on error.
  */
 int pgm_swap_edge_bufs(void* a, void* b);
-
 
 /*
  Convenience functions to allow number-based names instead of

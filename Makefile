@@ -86,7 +86,7 @@ AR  := ${CROSS_COMPILE}${AR}
 # Targets
 
 all     = lib ${tools}
-tools   = cvtest ringtest basictest datapassingtest sockstreamtest pingpong depthtest pgmrt backedgetest ancestortest
+tools   = cvtest ringtest basictest datapassingtest sockstreamtest pingpong depthtest pgmrt backedgetest ancestortest dottest
 
 .PHONY: all lib clean dump-config TAGS tags cscope help
 
@@ -165,6 +165,9 @@ lib-backedgetest = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_s
 
 obj-ancestortest = ancestortest.o
 lib-ancestortest = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_system ${liblitmus-flags}
+
+obj-dottest = dottest.o
+lib-dottest = -lpthread -lm -lrt -lboost_graph -lboost_filesystem -lboost_system ${liblitmus-flags}
 
 # ##############################################################################
 # Build everything that depends on liblitmus.

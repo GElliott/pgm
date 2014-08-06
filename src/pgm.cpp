@@ -2915,30 +2915,42 @@ double pgm_get_max_depth(node_t target, pgm_weight_func_t wfunc, void* user)
 			goto out;
 		}
 
-		bedge_t* edge_array = new bedge_t[g->nr_edges];
-		double* weights = new double[g->nr_edges];
+		int nr_foward_edges = 0;
 		for(int i = 0; i < g->nr_edges; ++i)
 		{
-			if(!g->edges[i].is_backedge)
-			{
-				edge_array[i] =
-					std::make_pair(g->edges[i].producer, g->edges[i].consumer);
-			}
+			if(g->edges[i].is_backedge)
+				continue;
+			++nr_foward_edges;
 		}
+
+		bedge_t* edge_array = new bedge_t[nr_foward_edges];
+		double* weights = new double[nr_foward_edges];
+		for(int i = 0, j = 0; i < g->nr_edges; ++i)
+		{
+			if(g->edges[i].is_backedge)
+				continue;
+
+			edge_array[j++] =
+				std::make_pair(g->edges[i].producer, g->edges[i].consumer);
+		}
+
 		if(wfunc)
 		{
-			for(int i = 0; i < g->nr_edges; ++i)
+			for(int i = 0, j = 0; i < g->nr_edges; ++i)
 			{
+				if(g->edges[i].is_backedge)
+					continue;
+
 				edge_t external_rep = {target.graph, i};
-				weights[i] = -1.0*wfunc(external_rep, user);
+				weights[j++] = -1.0*wfunc(external_rep, user);
 			}
 		}
 		else
 		{
-			std::fill(weights, weights + g->nr_edges, -1.0);
+			std::fill(weights, weights + nr_foward_edges, -1.0);
 		}
 
-		bgraph_t bgraph(edge_array, edge_array + g->nr_edges,
+		bgraph_t bgraph(edge_array, edge_array + nr_foward_edges,
 						weights, g->nr_nodes);
 		std::vector<bnode_t> p(boost::num_vertices(bgraph));
 		std::vector<double> d(boost::num_vertices(bgraph));
@@ -2946,7 +2958,14 @@ double pgm_get_max_depth(node_t target, pgm_weight_func_t wfunc, void* user)
 		dist = std::numeric_limits<double>::max();
 		for(int i = 0; i < g->nr_nodes; ++i)
 		{
-			if(g->nodes[i].nr_in != 0)
+			int nr_forward_in = 0;
+			for(int j = 0; j < g->nodes[i].nr_in; ++j)
+			{
+				if(g->edges[g->nodes[i].in[j]].is_backedge)
+					continue;
+				nr_forward_in++;
+			}
+			if(nr_forward_in != 0)
 				continue;
 			std::fill(d.begin(), d.end(), std::numeric_limits<double>::max());
 			d[i] = 0.0;
@@ -2991,30 +3010,40 @@ double pgm_get_min_depth(node_t target, pgm_weight_func_t wfunc, void* user)
 			goto out;
 		}
 
-		bedge_t* edge_array = new bedge_t[g->nr_edges];
-		double* weights = new double[g->nr_edges];
+		int nr_foward_edges = 0;
 		for(int i = 0; i < g->nr_edges; ++i)
 		{
-			if(!g->edges[i].is_backedge)
-			{
-				edge_array[i] =
-					std::make_pair(g->edges[i].producer, g->edges[i].consumer);
-			}
+			if(g->edges[i].is_backedge)
+				continue;
+			++nr_foward_edges;
+		}
+
+		bedge_t* edge_array = new bedge_t[nr_foward_edges];
+		double* weights = new double[nr_foward_edges];
+		for(int i = 0, j = 0; i < g->nr_edges; ++i)
+		{
+			if(g->edges[i].is_backedge)
+				continue;
+			edge_array[j++] =
+				std::make_pair(g->edges[i].producer, g->edges[i].consumer);
 		}
 		if(wfunc)
 		{
-			for(int i = 0; i < g->nr_edges; ++i)
+			for(int i = 0, j = 0; i < g->nr_edges; ++i)
 			{
+				if(g->edges[i].is_backedge)
+					continue;
+
 				edge_t external_rep = {target.graph, i};
-				weights[i] = wfunc(external_rep, user);
+				weights[j++] = wfunc(external_rep, user);
 			}
 		}
 		else
 		{
-			std::fill(weights, weights + g->nr_edges, 1.0);
+			std::fill(weights, weights + nr_foward_edges, 1.0);
 		}
 
-		bgraph_t bgraph(edge_array, edge_array + g->nr_edges,
+		bgraph_t bgraph(edge_array, edge_array + nr_foward_edges,
 						weights, g->nr_nodes);
 		std::vector<bnode_t> p(boost::num_vertices(bgraph));
 		std::vector<double> d(boost::num_vertices(bgraph));
@@ -3022,7 +3051,14 @@ double pgm_get_min_depth(node_t target, pgm_weight_func_t wfunc, void* user)
 		dist = std::numeric_limits<double>::max();
 		for(int i = 0; i < g->nr_nodes; ++i)
 		{
-			if(g->nodes[i].nr_in != 0)
+			int nr_forward_in = 0;
+			for(int j = 0; j < g->nodes[i].nr_in; ++j)
+			{
+				if(g->edges[g->nodes[i].in[j]].is_backedge)
+					continue;
+				nr_forward_in++;
+			}
+			if(nr_forward_in != 0)
 				continue;
 			bnode_t bsource = boost::vertex(i, bgraph);
 			boost::dijkstra_shortest_paths(bgraph, bsource,

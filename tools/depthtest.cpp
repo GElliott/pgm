@@ -43,8 +43,9 @@ int main(void)
 	graph_t g;
 	node_t  n0, n1, n2, n3, n4;
 	edge_t  e0_1, e0_2, e1_4, e2_3, e3_4;
+	edge_t  be4_0, be3_1;
 
-	CheckError(pgm_init("/tmp/graphs", 1));
+	CheckError(pgm_init_process_local());
 	CheckError(pgm_init_graph(&g, "demo"));
 
 	CheckError(pgm_init_node(&n0, g, "n0"));
@@ -59,12 +60,21 @@ int main(void)
 	CheckError(pgm_init_edge(&e2_3, n2, n3, "e2_3"));
 	CheckError(pgm_init_edge(&e3_4, n3, n4, "e3_4"));
 
-	printf("depths:\n");
+	CheckError(pgm_init_backedge(&be4_0, 1, n4, n0, "be4_0"));
+	CheckError(pgm_init_backedge(&be3_1, 1, n3, n1, "be3_1"));
+
+	printf("min depths:\n");
 	printf("depth(n0): %d\n", (int)pgm_get_min_depth(n0));
 	printf("depth(n1): %d\n", (int)pgm_get_min_depth(n1));
 	printf("depth(n2): %d\n", (int)pgm_get_min_depth(n2));
 	printf("depth(n3): %d\n", (int)pgm_get_min_depth(n3));
 	printf("depth(n4): %d\n", (int)pgm_get_min_depth(n4));
+	printf("max depths:\n");
+	printf("depth(n0): %d\n", (int)pgm_get_max_depth(n0));
+	printf("depth(n1): %d\n", (int)pgm_get_max_depth(n1));
+	printf("depth(n2): %d\n", (int)pgm_get_max_depth(n2));
+	printf("depth(n3): %d\n", (int)pgm_get_max_depth(n3));
+	printf("depth(n4): %d\n", (int)pgm_get_max_depth(n4));
 
 	weights[e0_1] = 3;
 	weights[e0_2] = 5;
@@ -113,7 +123,6 @@ int main(void)
 	printf("dist(n2): %d\n", (int)pgm_get_max_depth(n2, weight));
 	printf("dist(n3): %d\n", (int)pgm_get_max_depth(n3, weight));
 	printf("dist(n4): %d\n", (int)pgm_get_max_depth(n4, weight));
-
 
 	CheckError(pgm_destroy_graph(g));
 

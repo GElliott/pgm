@@ -2723,6 +2723,53 @@ out:
 	return ret;
 }
 
+int pgm_is_parent(node_t node, node_t query)
+{
+	int ret = -1;
+	struct pgm_graph* g;
+	struct pgm_node* n;
+	struct pgm_node* q;
+
+	if(node.graph != query.graph)
+		goto out;
+	if(!is_valid_graph(node.graph))
+		goto out;
+
+	ret = 0;
+	if(node.node == query.node)
+	{
+		goto out;
+	}
+
+	g = &gGraphs[node.graph];
+	n = &g->nodes[node.node];
+	q = &g->nodes[query.node];
+
+	pthread_mutex_lock(&g->lock);
+	for(int i = 0; i < n->nr_in; ++i)
+	{
+		if(g->edges[n->in[i]].is_backedge)
+		{
+			continue; // skip backedge
+		}
+
+		if(q == &g->nodes[g->edges[n->in[i]].producer])
+		{
+			ret = 1;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&g->lock);
+
+out:
+	return ret;
+}
+
+int pgm_is_child(node_t node, node_t query)
+{
+	return pgm_is_parent(query, node);
+}
+
 static int is_ancestor(const struct pgm_graph* g,
 	const struct pgm_node* n, const struct pgm_node* q,
 	std::set<int>& visited)
@@ -2785,7 +2832,6 @@ int pgm_is_ancestor(node_t node, node_t query)
 
 out:
 	return ret;
-
 }
 
 int pgm_is_descendant(node_t n, node_t query)

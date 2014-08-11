@@ -177,7 +177,7 @@ int pgm_init_graph(graph_t* graph, const char* graph_name);
 /*
    Prints the graph in dot format to the provided file descriptor.
      [in] graph: Graph
-	 [in] file: File descriptor
+     [in] file: File descriptor
    Return: 0 on success. -1 on error.
  */
 int pgm_print_graph(graph_t graph, FILE* out);
@@ -411,16 +411,59 @@ int pgm_get_nr_consume(edge_t edge);
 int pgm_get_nr_threshold(edge_t edge);
 
 /*
+   Query to see if 'query' is a child of 'node'.
+     [in] node:  possible parent of 'query'
+     [in] query: possible child of 'node'
+   Return:
+     1 if 'query' is a child of 'node'.
+     0 if 'query' is NOT a child of 'node'.
+     -1 if 'query' or 'node' is an invalid node, or
+       if 'query' and 'node' are from different graphs
+
+   Note: Explicit backedges are ignored.
+
+   Note: Beware that pgm_is_child() returns -1 on error,
+     so the code "if(pgm_is_child(..))" may introduce bugs
+     since the logic test does not distinguish between the
+     positive case and the error case.
+ */
+int pgm_is_child(node_t node, node_t query);
+
+/*
+   Query to see if 'query' is a parent of 'node'.
+     [in] node:  possible child of 'query'
+     [in] query: possible parent of 'node'
+   Return:
+     1 if 'query' is a parent of 'node'.
+     0 if 'query' is NOT a parent of 'node'.
+    -1 if 'query' or 'node' is an invalid node, or
+       if 'query' and 'node' are from different graphs
+
+   Note: Explicit backedges are ignored.
+
+   Note: Beware that pgm_is_parent() returns -1 on error,
+     so the code "if(pgm_is_parent(..))" may introduce bugs
+     since the logic test does not distinguish between the
+     positive case and the error case.
+ */
+int pgm_is_parent(node_t node, node_t query);
+
+/*
    Query to see if 'query' is an ancestor of 'node'.
      [in] node:  possible decendent of 'query'
      [in] query: possible ancestor of 'node'
    Return:
      1 if 'query' is an ancestor of 'node'.
      0 if 'query' is NOT an ancestor of 'node'.
-	-1 if 'query' or 'node' is an invalid node, or
+    -1 if 'query' or 'node' is an invalid node, or
        if 'query' and 'node' are from different graphs
 
-   Note: pgm_is_ancestor(n, q) === pgm_is_descendant(q, n)
+   Note: Explicit backedges are ignored.
+
+   Note: Beware that pgm_is_ancestor() returns -1 on error,
+     so the code "if(pgm_is_ancestor(..))" may introduce bugs
+     since the logic test does not distinguish between the
+     positive case and the error case.
  */
 int pgm_is_ancestor(node_t node, node_t query);
 
@@ -431,18 +474,23 @@ int pgm_is_ancestor(node_t node, node_t query);
    Return:
      1 if 'query' is an decendent of 'node'.
      0 if 'query' is NOT an decendent of 'node'.
-	-1 if 'query' or 'node' is an invalid node, or
+    -1 if 'query' or 'node' is an invalid node, or
        if 'query' and 'node' are from different graphs
 
-   Note: pgm_is_ancestor(n, q) === pgm_is_descendant(q, n)
+   Note: Explicit backedges are ignored.
+
+   Note: Beware that pgm_is_descendant() returns -1 on error,
+     so the code "if(pgm_is_descendant(..))" may introduce bugs
+     since the logic test does not distinguish between the
+     positive case and the error case.
  */
 int pgm_is_descendant(node_t node, node_t query);
 
 /*
    Check if a graph is a acyclic.
      [in] graph: Graph descriptor
-	 [in] ignore_explicit_backedges: Ignore edges that were added
-	      with pgm_init_backedge().
+     [in] ignore_explicit_backedges: Ignore edges that were added
+          with pgm_init_backedge().
    Return: 1 if graph is acyclic, 0 if it is not.
  */
 int pgm_is_dag(graph_t graph, int ignore_explicit_backedges = 1);

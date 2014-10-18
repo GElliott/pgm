@@ -27,15 +27,15 @@ serial pipeline model. Soft real-time guarantees for these workloads are
 clearly desirable, but are not realized due to a lack of operating system
 support.
 
-[1] LITMUS^RT: http://www.litmus-rt.org
+[1] LITMUS^RT: [http://www.litmus-rt.org](http://www.litmus-rt.org)
 
-on github: https://github.com/LITMUS-RT/litmus-rt
+on github: [https://github.com/LITMUS-RT/litmus-rt](https://github.com/LITMUS-RT/litmus-rt)
 
 [2] C. Liu and J. H. Anderson, "Supporting Soft Real-Time DAG-based Systems on
 Multiprocessors with No Utilization Loss", Proceedings of the 31st IEEE Real-Time
 Systems Symposium, pp. 3-13, December 2010.
 
-available here: http://www.cs.unc.edu/~anderson/papers/rtss10b.pdf
+available here: [http://www.cs.unc.edu/~anderson/papers/rtss10b.pdf](http://www.cs.unc.edu/~anderson/papers/rtss10b.pdf)
 
 Compilation
 ===========
@@ -46,14 +46,16 @@ real-time scheduling can be achieved by using the LITMUS^RT Linux kernel.
 To enable LITMUS^RT support, uncomment 'flags-litmus' line in the Makefile.
 
 You must patch LITMUS^RT (version 2013.1) to support PGM^RT. Source
-code is available here: http://wiki.litmus-rt.org/litmus/Publications
+code is available here: [http://wiki.litmus-rt.org/litmus/Publications](http://wiki.litmus-rt.org/litmus/Publications)
 
 Publications
 ============
 G. Elliott, N. Kim, J. Erickson, C. Liu, and J. Anderson, "Response-Time
 Minimization of Automotive-Inspired Dataflows on Multicore Platforms",
 Proceedings of the 20th IEEE International Conference on Embedded and Real-Time
-Computing Systems and Applications, August 2014 (to appear).
+Computing Systems and Applications, August 2014.
+
+available here: [http://www.cs.unc.edu/~anderson/papers/rtcsa14b_long.pdf](http://www.cs.unc.edu/~anderson/papers/rtcsa14b_long.pdf)
 
 License
 =======
@@ -73,7 +75,7 @@ modification, are permitted provided that the following conditions are met:
   notice, this list of conditions and the following disclaimer in the
   documentation and/or other materials provided with the distribution.
 
-* Neither the name of the <organization> nor the
+* Neither the name of the PGM^RT nor the
   names of its contributors may be used to endorse or promote products
   derived from this software without specific prior written permission.
 

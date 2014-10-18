@@ -14,6 +14,7 @@
 #endif
 
 #include "atomic.h"
+#include "interrupts.h"
 
 #if ULONG_MAX == 0xffffffffffffffffUL
 typedef unsigned long long ticketdata_t;
@@ -75,18 +76,6 @@ static inline void tl_init_np(ticketlock_t *t)
 #if defined(PGM_NP_INTERRUPTS)
 	iopl(3);
 #endif
-}
-
-static inline unsigned long save_flags(void)
-{
-	unsigned long flags;
-	asm volatile("pushf ; pop %0" : "=rm" (flags) : :"memory");
-	return flags;
-}
-
-static inline void restore_flags(unsigned long flags)
-{
-	asm volatile("push %0 ; popf" : : "g" (flags) : "memory", "cc");
 }
 
 static inline void tl_lock_np(ticketlock_t* t, unsigned long* flags)

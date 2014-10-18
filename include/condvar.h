@@ -6,7 +6,7 @@
 #include <sys/syscall.h>
 #include <linux/futex.h>
 
-#include "ticketlock.h"
+#include "spinlock.h"
 
 typedef int seq_t;
 
@@ -36,32 +36,32 @@ static inline void cv_init_shared(cv_t* cv)
 	*cv = CV_INITIALIZER_PUBLIC;
 }
 
-static inline int cv_wait(cv_t* cv, ticketlock_t* l)
+static inline int cv_wait(cv_t* cv, spinlock_t* l)
 {
 	int ret;
 	int wait_mode = (cv->mode == CV_PRIVATE) ? FUTEX_WAIT_PRIVATE : FUTEX_WAIT;
 	seq_t seq = cv->seq;
 
 	++cv->waiters;
-	tl_unlock(l); /* memory barrier */
+	spin_unlock(l); /* memory barrier */
 	ret = syscall(SYS_futex, &cv->seq, wait_mode, seq, NULL, NULL, 0);
-	tl_lock(l);
+	spin_lock(l);
 	--cv->waiters;
 
 	return ret;
 }
 
 #ifndef PGM_PREEMPTIVE
-static inline int cv_wait_np(cv_t* cv, ticketlock_t* l, unsigned long *flags)
+static inline int cv_wait_np(cv_t* cv, spinlock_t* l, unsigned long *flags)
 {
 	int ret;
 	int wait_mode = (cv->mode == CV_PRIVATE) ? FUTEX_WAIT_PRIVATE : FUTEX_WAIT;
 	seq_t seq = cv->seq;
 
 	++cv->waiters;
-	tl_unlock_np(l, *flags); /* memory barrier */
+	spin_unlock_np(l, *flags); /* memory barrier */
 	ret = syscall(SYS_futex, &cv->seq, wait_mode, seq, NULL, NULL, 0);
-	tl_lock_np(l, flags);
+	spin_lock_np(l, flags);
 	--cv->waiters;
 
 	return ret;

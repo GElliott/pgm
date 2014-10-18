@@ -22,6 +22,18 @@
 #endif
 
 /*
+ Select the spinlock type. ticketlock_t is simple,
+ but queuelock_t is more cache efficient on systems
+ with large distributed caches (less bouncing of
+ cache lines).
+ - ticketlock_t = 0
+ - queuelock_t  = 1
+ */
+#if (PGM_SYNC_METHOD == 1)
+	#define PGM_SPINLOCK_TYPE	0
+#endif
+
+/*
  Select the method tasks use for becoming non-preemptive
  while holding spinlocks.
  - To allow preemption                 = 0
@@ -32,7 +44,7 @@
   1) Options 1 and 2 require tasks to run as root.
   2) Disabling interrupts may be unsafe for IPCs
      that may block on write. (PGM uses non-blocking
-	 writes whenever possible.)
+     writes whenever possible.)
  */
 #ifndef _USE_LITMUS
 	#define PGM_NP_METHOD		0

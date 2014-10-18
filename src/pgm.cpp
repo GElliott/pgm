@@ -33,10 +33,14 @@
 typedef pthread_mutex_t pgm_lock_t;
 typedef pthread_cond_t  pgm_cv_t;
 #elif defined(PGM_USE_PGM_SYNC)
-#include "ticketlock.h"
+#include "spinlock.h"
 #include "condvar.h"
-typedef ticketlock_t    pgm_lock_t;
+typedef spinlock_t      pgm_lock_t;
 typedef cv_t            pgm_cv_t;
+
+#if PGM_SPINLOCK_TYPE == 1
+__thread queuenode_t thread_qnode;
+#endif
 #endif
 
 #include "ring.h"
@@ -1420,13 +1424,13 @@ out:
 #elif defined(PGM_USE_PGM_SYNC)
 
 	#ifdef PGM_PREEMPTIVE
-		#define pgm_lock_init(l)    tl_init((l))
-		#define pgm_lock(l, flags)   do { ((void)(flags)); tl_lock((l)); } while(0)
-		#define pgm_unlock(l, flags) do { ((void)(flags)); tl_unlock((l)); } while(0)
+		#define pgm_lock_init(l)     spin_init((l))
+		#define pgm_lock(l, flags)   do { ((void)(flags)); spin_lock((l)); } while(0)
+		#define pgm_unlock(l, flags) do { ((void)(flags)); spin_unlock((l)); } while(0)
 	#else
-		#define pgm_lock_init(l)    tl_init_np((l))
-		#define pgm_lock(l, flags)   tl_lock_np((l), &(flags))
-		#define pgm_unlock(l, flags) tl_unlock_np((l), (flags))
+		#define pgm_lock_init(l)     spin_init_np((l))
+		#define pgm_lock(l, flags)   spin_lock_np((l), &(flags))
+		#define pgm_unlock(l, flags) spin_unlock_np((l), (flags))
 	#endif
 	#define pgm_lock_destroy(l) (void)(l)
 

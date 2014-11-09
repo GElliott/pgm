@@ -54,7 +54,7 @@ static inline void __ql_lock(queuelock_t* q, queuenode_t* self)
 	do
 	{
 		prev = (struct __queuenode*)((volatile ptr_t) q->tail);
-	} while(__sync_bool_compare_and_swap(&q->tail, (ptr_t)prev, (ptr_t)self));
+	} while(!__sync_bool_compare_and_swap(&q->tail, (ptr_t)prev, (ptr_t)self));
 
 	/* was there someone ahead of us? */
 	if (prev)
@@ -84,7 +84,7 @@ static inline void __ql_unlock(queuelock_t* q, queuenode_t* self)
 	__sync_synchronize();
 
 	/* try to dequeue from the end of the line */
-	if (!self->next && __sync_bool_compare_and_swap(&q->tail, (ptr_t)self, (ptr_t)0))
+	if (!self->next && !__sync_bool_compare_and_swap(&q->tail, (ptr_t)self, (ptr_t)0))
 	{
 		/* we really weren't at the end of the line! */
 

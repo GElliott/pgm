@@ -70,7 +70,7 @@ typedef uint32_t pgm_fd_mask_t;
 
 static __thread char errnostr_buf[80];
 
-static inline pid_t gettid(void)
+static inline pid_t pgm_gettid(void)
 {
 	pid_t p = syscall(__NR_gettid);
 	return p;
@@ -3186,7 +3186,7 @@ int pgm_claim_node(node_t node, pid_t tid)
 			goto out;
 		}
 
-		n->owner = (tid == 0) ? gettid() : tid;
+		n->owner = (tid == 0) ? pgm_gettid() : tid;
 	}
 	pthread_mutex_unlock(&g->lock);
 
@@ -3218,7 +3218,7 @@ int pgm_claim_any_node(graph_t graph, node_t* node, pid_t tid)
 			{
 				node_id = i;
 				n = &g->nodes[i];
-				n->owner = (tid == 0) ? gettid() : tid;
+				n->owner = (tid == 0) ? pgm_gettid() : tid;
 				break;
 			}
 		}
@@ -3254,7 +3254,7 @@ int pgm_release_node(node_t node, pid_t tid)
 
 	if(tid == 0)
 	{
-		tid = gettid();
+		tid = pgm_gettid();
 	}
 
 	pthread_mutex_lock(&g->lock);
